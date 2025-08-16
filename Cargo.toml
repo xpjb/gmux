@@ -1,0 +1,10 @@
+[package]
+name = "gmux"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fontconfig = "0.10.0"
+lazy_static = "1.5.0"
+libc = "0.2.175"
+x11 = "2.21.0"
