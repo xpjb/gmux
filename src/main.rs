@@ -7,7 +7,9 @@ use x11::xft;
 use x11::keysym;
 
 mod command;
+mod drw;
 use command::*;
+use drw::{Drw, Scheme};
 
 // From <X11/Xproto.h>
 const X_SET_INPUT_FOCUS: u8 = 42;
@@ -19,19 +21,58 @@ const X_GRAB_BUTTON: u8 = 28;
 const X_GRAB_KEY: u8 = 33;
 const X_COPY_AREA: u8 = 62;
 
+fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
+    unsafe {
+        let ptr = libc::calloc(nmemb, size);
+        if ptr.is_null() {
+            panic!("fatal: could not calloc");
+        }
+        ptr
+    }
+}
+
+fn drawbar(state: &mut GmuxState, mon: *mut Monitor) {
+    let monitor = unsafe { &mut *mon };
+    let mut x = 0;
+
+    state.drw.rect(x, 0, monitor.ww as u32, state.bh as u32, true, true);
+    for i in 0..TAGS.len() {
+        if (monitor.tagset[monitor.seltags as usize] & (1 << i)) != 0 {
+            unsafe { state.drw.scheme = *state.scheme.add(Scheme::Sel as usize) };
+        } else {
+            unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
+        }
+        let w = TAGS[i].len();
+        x = state.drw.text(x, 0, w as u32, state.bh as u32, 2, TAGS[i], false);
+    }
+
+    let ltsymbol = unsafe { CStr::from_ptr(monitor.ltsymbol.as_ptr()).to_str().unwrap() };
+    let w = ltsymbol.len();
+    state.drw.text(x, 0, w as u32, state.bh as u32, 2, ltsymbol, false);
+
+    state.drw.map(monitor.barwin, 0, 0, monitor.ww as u32, state.bh as u32);
+}
+
+fn drawbars(state: &mut GmuxState) {
+    let mut m = state.mons;
+    while !m.is_null() {
+        drawbar(state, m);
+        m = unsafe { (*m).next };
+    }
+}
+
 fn updatenumlockmask(state: &mut GmuxState) {
     let mut_state = state as *mut GmuxState;
     unsafe {
         let mut i = 0;
-        let mut j = 0;
-        let mut modmap = xlib::XGetModifierMapping((*mut_state).dpy);
+        let modmap = xlib::XGetModifierMapping((*mut_state).dpy);
         if modmap.is_null() {
             return;
         }
         let max_keypermod = (*modmap).max_keypermod;
         let mut p = (*modmap).modifiermap;
         while i < 8 {
-            j = 0;
+            let mut j = 0;
             while j < max_keypermod {
                 if *p != 0 && xlib::XKeycodeToKeysym((*mut_state).dpy, *p, 0) as u32 == keysym::XK_Num_Lock {
                     (*mut_state).numlockmask = 1 << i;
@@ -60,12 +101,6 @@ enum Cur {
     Resize,
     Move,
     Last,
-}
-#[allow(dead_code)]
-#[derive(PartialEq, Copy, Clone)]
-enum Scheme {
-    Norm,
-    Sel,
 }
 #[derive(PartialEq, Copy, Clone)]
 enum Net {
@@ -232,26 +267,7 @@ struct Rule {
 }
 
 // X11 FFI forward declarations from drw.h
-#[repr(C)]
-struct Cur2 {
-    cursor: xlib::Cursor,
-}
-type Fnt = xft::XftFont;
 type Clr = xft::XftColor;
-
-#[allow(dead_code)]
-#[repr(C)]
-struct Drw {
-    w: c_uint,
-    h: c_uint,
-    dpy: *mut xlib::Display,
-    screen: c_int,
-    root: xlib::Window,
-    drawable: xlib::Drawable,
-    gc: xlib::GC,
-    scheme: *mut Clr,
-    fonts: *mut Fnt,
-}
 
 // Global state
 struct GmuxState {
@@ -270,12 +286,11 @@ struct GmuxState {
     wmatom: [xlib::Atom; WM::Last as usize],
     netatom: [xlib::Atom; Net::Last as usize],
     running: c_int,
-    cursor: [*mut Cur2; Cur::Last as usize],
+    cursor: [*mut xlib::Cursor; Cur::Last as usize],
     #[allow(dead_code)]
     scheme: *mut *mut Clr,
     dpy: *mut xlib::Display,
-    #[allow(dead_code)]
-    drw: *mut Drw,
+    drw: Drw,
     mons: *mut Monitor,
     selmon: *mut Monitor,
     root: xlib::Window,
@@ -370,9 +385,26 @@ fn setup(state: &mut GmuxState) {
         state.sw = xlib::XDisplayWidth(state.dpy, state.screen);
         state.sh = xlib::XDisplayHeight(state.dpy, state.screen);
         state.root = xlib::XRootWindow(state.dpy, state.screen);
+        state.drw = Drw::create(state.dpy, state.screen, state.root, state.sw as u32, state.sh as u32);
         
+        let fonts = &["monospace:size=10"];
+        if !state.drw.fontset_create(fonts) {
+            die("no fonts could be loaded.");
+        }
+
+        let colors = &[
+            &["#222222", "#444444", "#bbbbbb"],
+            &["#005577", "#eeeeee", "#005577"],
+        ];
+        state.scheme = ecalloc(colors.len(), std::mem::size_of::<*mut Clr>()) as *mut *mut Clr;
+        for i in 0..colors.len() {
+            *state.scheme.add(i) = state.drw.scm_create(colors[i]);
+        }
+
         state.bh = 24; // Simplified for now
         
+        drawbars(state);
+
         let _utf8_string_name = CString::new("UTF8_STRING").unwrap();
         let wm_protocols_name = CString::new("WM_PROTOCOLS").unwrap();
         let wm_delete_name = CString::new("WM_DELETE_WINDOW").unwrap();
@@ -422,6 +454,25 @@ fn setup(state: &mut GmuxState) {
         monitor.wy = 0;
         monitor.ww = state.sw;
         monitor.wh = state.sh;
+        let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
+        wa.override_redirect = 1;
+        wa.background_pixmap = xlib::ParentRelative as u64;
+        wa.event_mask = xlib::ButtonPressMask | xlib::ExposureMask;
+        monitor.barwin = xlib::XCreateWindow(
+            state.dpy,
+            state.root,
+            monitor.wx,
+            monitor.by,
+            monitor.ww as u32,
+            state.bh as u32,
+            0,
+            xlib::XDefaultDepth(state.dpy, state.screen),
+            xlib::InputOutput as u32,
+            xlib::XDefaultVisual(state.dpy, state.screen),
+            (xlib::CWOverrideRedirect | xlib::CWBackPixmap | xlib::CWEventMask) as u64,
+            &mut wa,
+        );
+        xlib::XMapRaised(state.dpy, monitor.barwin);
         state.mons = mon;
         state.selmon = mon;
 
@@ -445,12 +496,12 @@ fn setup(state: &mut GmuxState) {
         xlib::XDeleteProperty(state.dpy, state.root, state.netatom[Net::ClientList as usize]);
 
         let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
-        wa.cursor = (*state.cursor[Cur::Normal as usize]).cursor;
-        wa.event_mask = xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask
+        wa.cursor = *state.cursor[Cur::Normal as usize];
+        wa.event_mask = (xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask
             | xlib::ButtonPressMask | xlib::PointerMotionMask | xlib::EnterWindowMask
             | xlib::LeaveWindowMask | xlib::StructureNotifyMask | xlib::PropertyChangeMask
-            | xlib::KeyPressMask;
-        xlib::XChangeWindowAttributes(state.dpy, state.root, xlib::CWEventMask | xlib::CWCursor, &mut wa);
+            | xlib::KeyPressMask) as i64;
+        xlib::XChangeWindowAttributes(state.dpy, state.root, (xlib::CWEventMask | xlib::CWCursor) as u64, &mut wa);
         xlib::XSelectInput(state.dpy, state.root, wa.event_mask);
         state.handler[xlib::ButtonPress as usize] = Some(buttonpress);
         state.handler[xlib::MotionNotify as usize] = Some(motionnotify);
@@ -466,54 +517,41 @@ fn die(s: &str) {
     std::process::exit(1);
 }
 
-fn ecalloc(nmemb: usize, size: usize) -> *mut c_void {
+unsafe fn drw_cur_create(state: &mut GmuxState, shape: i32) -> *mut xlib::Cursor {
+    let cur = ecalloc(1, std::mem::size_of::<xlib::Cursor>()) as *mut xlib::Cursor;
     unsafe {
-        let p = libc::calloc(nmemb, size);
-        if p.is_null() {
-            die("fatal: could not calloc");
-        }
-        p
-    }
-}
-
-unsafe fn drw_cur_create(state: &mut GmuxState, shape: i32) -> *mut Cur2 {
-    let cur = ecalloc(1, std::mem::size_of::<Cur2>()) as *mut Cur2;
-    unsafe {
-        (*cur).cursor = xlib::XCreateFontCursor(state.dpy, shape as c_uint);
+        *cur = xlib::XCreateFontCursor(state.drw.dpy, shape as c_uint);
     }
     cur
 }
 
-fn grabkeys(state: &mut GmuxState) -> Vec<Key> {
+fn grabkeys(_state: &mut GmuxState) -> Vec<Key> {
     let mut keys: Vec<Key> = vec![];
-    unsafe {
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_p, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Dmenu as *const _ as *const c_void) } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Terminal as *const _ as *const c_void) } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_b, func: togglebar, arg: Arg { i: 0 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_j, func: focusstack, arg: Arg { i: 1 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_k, func: focusstack, arg: Arg { i: -1 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_i, func: incnmaster, arg: Arg { i: 1 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_d, func: incnmaster, arg: Arg { i: -1 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_h, func: setmfact, arg: Arg { f: -0.05 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_l, func: setmfact, arg: Arg { f: 0.05 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, func: zoom, arg: Arg { i: 0 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, func: view, arg: Arg { i: 0 } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, func: killclient, arg: Arg { i: 0 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_t, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[0] as *const _ as *const c_void) } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_f, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[1] as *const _ as *const c_void) } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_m, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[2] as *const _ as *const c_void) } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_space, func: setlayout, arg: Arg { v: SyncVoidPtr(null_mut()) } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, func: togglefloating, arg: Arg { i: 0 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_0, func: view, arg: Arg { ui: !0 } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, func: tag, arg: Arg { ui: !0 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, func: focusmon, arg: Arg { i: -1 } });
-        keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_period, func: focusmon, arg: Arg { i: 1 } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, func: tagmon, arg: Arg { i: -1 } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, func: tagmon, arg: Arg { i: 1 } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg { i: 0 } });
-        keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Screenshot as *const _ as *const c_void) } });
-
-    }
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_p, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Dmenu as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Terminal as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_b, func: togglebar, arg: Arg { i: 0 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_j, func: focusstack, arg: Arg { i: 1 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_k, func: focusstack, arg: Arg { i: -1 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_i, func: incnmaster, arg: Arg { i: 1 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_d, func: incnmaster, arg: Arg { i: -1 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_h, func: setmfact, arg: Arg { f: -0.05 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_l, func: setmfact, arg: Arg { f: 0.05 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, func: zoom, arg: Arg { i: 0 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, func: view, arg: Arg { i: 0 } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, func: killclient, arg: Arg { i: 0 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_t, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[0] as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_f, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[1] as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_m, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[2] as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_space, func: setlayout, arg: Arg { v: SyncVoidPtr(null_mut()) } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, func: togglefloating, arg: Arg { i: 0 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_0, func: view, arg: Arg { ui: !0 } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, func: tag, arg: Arg { ui: !0 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, func: focusmon, arg: Arg { i: -1 } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_period, func: focusmon, arg: Arg { i: 1 } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, func: tagmon, arg: Arg { i: -1 } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, func: tagmon, arg: Arg { i: 1 } });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg { i: 0 } });
+    keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Screenshot as *const _ as *const c_void) } });
     keys
 }
 
@@ -783,7 +821,7 @@ fn show_hide(_state: &mut GmuxState, _c: *mut Client) {
 
 #[allow(dead_code)]
 unsafe fn restack(state: &mut GmuxState, m: *mut Monitor) {
-    // drawbar(m);
+    drawbar(state, m);
     let mon = unsafe { &*m };
     if mon.sel.is_null() {
         return;
@@ -873,18 +911,20 @@ unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
         let keys = grabkeys(state);
         let modifiers = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
         for key in keys.iter() {
-            let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
-            if code != 0 {
-                for modifier in modifiers.iter() {
-                    xlib::XGrabKey(
-                        state.dpy,
-                        code as c_int,
-                        key.mask | *modifier,
-                        (*c).win,
-                        1,
-                        xlib::GrabModeAsync,
-                        xlib::GrabModeAsync,
-                    );
+            unsafe {
+                let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
+                if code != 0 {
+                    for modifier in modifiers.iter() {
+                        xlib::XGrabKey(
+                            state.dpy,
+                            code as c_int,
+                            key.mask | *modifier,
+                            (*c).win,
+                            1,
+                            xlib::GrabModeAsync,
+                            xlib::GrabModeAsync,
+                        );
+                    }
                 }
             }
         }
@@ -897,7 +937,7 @@ unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
     }
     selmon.sel = c;
-    // drawbars();
+    drawbars(state);
 }
 
 
@@ -907,7 +947,7 @@ unsafe fn unfocus(state: &mut GmuxState, c: *mut Client, setfocus: bool) {
         return;
     }
     grabbuttons(state, c, false);
-    xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, (*c).win);
+    unsafe { xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, (*c).win) };
     // XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
     if setfocus {
         unsafe {
@@ -1232,6 +1272,7 @@ fn cleanup(state: &mut GmuxState) {
 
         for _i in 0..Cur::Last as usize {
         }
+        state.drw.free();
         xlib::XDestroyWindow(state.dpy, state.wmcheckwin);
         xlib::XSync(state.dpy, 0);
         xlib::XSetInputFocus(state.dpy, xlib::PointerRoot as u64, xlib::RevertToPointerRoot, xlib::CurrentTime);
@@ -1281,7 +1322,17 @@ fn main() {
         cursor: [null_mut(); Cur::Last as usize],
         scheme: null_mut(),
         dpy: null_mut(),
-        drw: null_mut(),
+        drw: Drw {
+            w: 0,
+            h: 0,
+            dpy: null_mut(),
+            screen: 0,
+            root: 0,
+            drawable: 0,
+            gc: null_mut(),
+            scheme: null_mut(),
+            fonts: Vec::new(),
+        },
         mons: null_mut(),
         selmon: null_mut(),
         root: 0,
