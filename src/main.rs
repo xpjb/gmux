@@ -19,6 +19,32 @@ const X_GRAB_BUTTON: u8 = 28;
 const X_GRAB_KEY: u8 = 33;
 const X_COPY_AREA: u8 = 62;
 
+fn updatenumlockmask(state: &mut GmuxState) {
+    let mut_state = state as *mut GmuxState;
+    unsafe {
+        let mut i = 0;
+        let mut j = 0;
+        let mut modmap = xlib::XGetModifierMapping((*mut_state).dpy);
+        if modmap.is_null() {
+            return;
+        }
+        let max_keypermod = (*modmap).max_keypermod;
+        let mut p = (*modmap).modifiermap;
+        while i < 8 {
+            j = 0;
+            while j < max_keypermod {
+                if *p != 0 && xlib::XKeycodeToKeysym((*mut_state).dpy, *p, 0) as u32 == keysym::XK_Num_Lock {
+                    (*mut_state).numlockmask = 1 << i;
+                }
+                p = p.offset(1);
+                j += 1;
+            }
+            i += 1;
+        }
+        xlib::XFreeModifiermap(modmap);
+    }
+}
+
 struct SyncPtr(*const c_char);
 unsafe impl Sync for SyncPtr {}
 
@@ -376,6 +402,29 @@ fn setup(state: &mut GmuxState) {
         state.netatom[Net::WMWindowTypeDialog as usize] = xlib::XInternAtom(state.dpy, net_wm_window_type_dialog_name.as_ptr(), 0);
         state.netatom[Net::ClientList as usize] = xlib::XInternAtom(state.dpy, net_client_list_name.as_ptr(), 0);
 
+        // Create a monitor
+        let mon = ecalloc(1, std::mem::size_of::<Monitor>()) as *mut Monitor;
+        let monitor = &mut *mon;
+        monitor.tagset = [1, 1];
+        monitor.mfact = 0.55;
+        monitor.nmaster = 1;
+        monitor.showbar = true;
+        monitor.topbar = true;
+        monitor.lt[0] = &LAYOUTS[0];
+        monitor.lt[1] = &LAYOUTS[1];
+        monitor.ltsymbol = [0; 16];
+        let symbol = CStr::from_ptr(LAYOUTS[0].symbol.0).to_str().unwrap();
+        let c_symbol = CString::new(symbol).unwrap();
+        let dest = monitor.ltsymbol.as_mut_ptr();
+        let src = c_symbol.as_ptr();
+        std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
+        monitor.wx = 0;
+        monitor.wy = 0;
+        monitor.ww = state.sw;
+        monitor.wh = state.sh;
+        state.mons = mon;
+        state.selmon = mon;
+
         state.cursor[Cur::Normal as usize] = drw_cur_create(state, 68); 
         state.cursor[Cur::Resize as usize] = drw_cur_create(state, 120);
         state.cursor[Cur::Move as usize] = drw_cur_create(state, 52);
@@ -399,12 +448,14 @@ fn setup(state: &mut GmuxState) {
         wa.cursor = (*state.cursor[Cur::Normal as usize]).cursor;
         wa.event_mask = xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask
             | xlib::ButtonPressMask | xlib::PointerMotionMask | xlib::EnterWindowMask
-            | xlib::LeaveWindowMask | xlib::StructureNotifyMask | xlib::PropertyChangeMask;
+            | xlib::LeaveWindowMask | xlib::StructureNotifyMask | xlib::PropertyChangeMask
+            | xlib::KeyPressMask;
         xlib::XChangeWindowAttributes(state.dpy, state.root, xlib::CWEventMask | xlib::CWCursor, &mut wa);
         xlib::XSelectInput(state.dpy, state.root, wa.event_mask);
         state.handler[xlib::ButtonPress as usize] = Some(buttonpress);
         state.handler[xlib::MotionNotify as usize] = Some(motionnotify);
         state.handler[xlib::KeyPress as usize] = Some(keypress_wrapper);
+        state.handler[xlib::MapRequest as usize] = Some(maprequest);
 
         focus(state, null_mut());
     }
@@ -462,25 +513,6 @@ fn grabkeys(state: &mut GmuxState) -> Vec<Key> {
         keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg { i: 0 } });
         keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Screenshot as *const _ as *const c_void) } });
 
-        let mut modifiers = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
-        xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, state.root);
-
-        for key in keys.iter() {
-            let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
-            if code != 0 {
-                for modifier in modifiers.iter_mut() {
-                    xlib::XGrabKey(
-                        state.dpy,
-                        code as c_int,
-                        key.mask | *modifier,
-                        state.root,
-                        1,
-                        xlib::GrabModeAsync,
-                        xlib::GrabModeAsync,
-                    );
-                }
-            }
-        }
     }
     keys
 }
@@ -809,6 +841,13 @@ unsafe fn attach(_state: &mut GmuxState, c: *mut Client) {
 }
 
 #[allow(dead_code)]
+unsafe fn attachstack(_state: &mut GmuxState, c: *mut Client) {
+    let mon = unsafe { &mut *(*c).mon };
+    unsafe { (*c).snext = mon.stack };
+    mon.stack = c;
+}
+
+#[allow(dead_code)]
 unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
     if c.is_null() || !is_visible(unsafe { &*c }) {
         let mut temp_c = unsafe { (*state.selmon).stack };
@@ -830,8 +869,27 @@ unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
         // detachstack(c);
         // attachstack(c);
         grabbuttons(state, c, true);
+        updatenumlockmask(state);
+        let keys = grabkeys(state);
+        let modifiers = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
+        for key in keys.iter() {
+            let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
+            if code != 0 {
+                for modifier in modifiers.iter() {
+                    xlib::XGrabKey(
+                        state.dpy,
+                        code as c_int,
+                        key.mask | *modifier,
+                        (*c).win,
+                        1,
+                        xlib::GrabModeAsync,
+                        xlib::GrabModeAsync,
+                    );
+                }
+            }
+        }
         // XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
-        // setfocus(c);
+        unsafe { xlib::XSetInputFocus(state.dpy, (*c).win, xlib::RevertToPointerRoot, xlib::CurrentTime) };
     } else {
         unsafe {
             xlib::XSetInputFocus(state.dpy, state.root, xlib::RevertToPointerRoot, xlib::CurrentTime)
@@ -849,6 +907,7 @@ unsafe fn unfocus(state: &mut GmuxState, c: *mut Client, setfocus: bool) {
         return;
     }
     grabbuttons(state, c, false);
+    xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, (*c).win);
     // XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
     if setfocus {
         unsafe {
@@ -911,6 +970,54 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
         unsafe { unfocus(state, (*state.selmon).sel, true) };
         state.selmon = m;
         unsafe { focus(state, null_mut()) };
+    }
+}
+
+#[allow(dead_code)]
+unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    let ev = unsafe { &mut (*(e as *mut xlib::XMapRequestEvent)) };
+    let mut wa: xlib::XWindowAttributes = unsafe { std::mem::zeroed() };
+    if unsafe { xlib::XGetWindowAttributes(state.dpy, ev.window, &mut wa) } == 0 {
+        return;
+    }
+    if wa.override_redirect != 0 {
+        return;
+    }
+    if unsafe { wintoclient(state, ev.window) }.is_null() {
+        unsafe { manage(state, ev.window, &mut wa) };
+    }
+}
+
+#[allow(dead_code)]
+unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowAttributes) {
+    let c = ecalloc(1, std::mem::size_of::<Client>()) as *mut Client;
+    let client = unsafe { &mut *c };
+    client.win = w;
+    client.x = wa.x;
+    client.y = wa.y;
+    client.w = wa.width;
+    client.h = wa.height;
+    client.oldx = wa.x;
+    client.oldy = wa.y;
+    client.oldw = wa.width;
+    client.oldh = wa.height;
+    client.oldbw = wa.border_width;
+    client.mon = state.selmon;
+
+    // updatetitle(c);
+    // XGetTransientForHint
+    // applyrules(c);
+
+    unsafe {
+        attach(state, c);
+        attachstack(state, c);
+    }
+
+    // ... More logic to come ...
+
+    unsafe {
+        xlib::XMapWindow(state.dpy, client.win);
+        focus(state, c);
     }
 }
 
@@ -1157,6 +1264,7 @@ fn clean_mask(mask: u32) -> u32 {
 }
 
 fn main() {
+    println!("Starting gmux...");
     let mut state = GmuxState {
         stext: [0; 256],
         screen: 0,
@@ -1196,7 +1304,7 @@ fn main() {
             panic!("dwm: cannot open display");
         }
         
-        checkotherwm(&mut state);
+        // checkotherwm(&mut state);
         setup(&mut state);
         scan(&mut state);
         run(&mut state);
