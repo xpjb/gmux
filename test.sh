@@ -7,7 +7,7 @@ pkill Xephyr
 pkill gmux
 
 # Start Xephyr in the background
-Xephyr :1 -screen 800x600 &
+Xephyr :1 -screen 1920x1080 &
 XEPHYR_PID=$!
 
 # Give Xephyr a moment to start up

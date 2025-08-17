@@ -1,4 +1,4 @@
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{xlib, xft};
 
@@ -129,12 +129,13 @@ impl Drw {
     pub fn scm_create(&mut self, clr_names: &[&str]) -> *mut Clr {
         let clrs = ecalloc(clr_names.len(), std::mem::size_of::<Clr>()) as *mut Clr;
         for (i, clr_name) in clr_names.iter().enumerate() {
+            let cstr = CString::new(*clr_name).expect("color name contains NUL");
             unsafe {
                 if xft::XftColorAllocName(
                     self.dpy,
                     xlib::XDefaultVisual(self.dpy, self.screen),
                     xlib::XDefaultColormap(self.dpy, self.screen),
-                    clr_name.as_ptr() as *const c_char,
+                    cstr.as_ptr(),
                     &mut *clrs.add(i),
                 ) == 0
                 {
@@ -173,7 +174,7 @@ impl Drw {
             );
             let usedfont = &self.fonts[0];
             let x = x + lpad as i32;
-            let w = w - lpad;
+            let w = w.saturating_sub(lpad);
 
             xft::XftDrawStringUtf8(
                 d,
