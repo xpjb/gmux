@@ -21,6 +21,10 @@ const X_GRAB_BUTTON: u8 = 28;
 const X_GRAB_KEY: u8 = 33;
 const X_COPY_AREA: u8 = 62;
 
+/* ========= configurable constants (similar to dwm's config.h) ========= */
+const FONT: &str = "monospace:size=16"; // change size here to scale bar text
+// ======================================================================
+
 fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
     unsafe {
         let ptr = libc::calloc(nmemb, size);
@@ -31,25 +35,44 @@ fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
     }
 }
 
-fn drawbar(state: &mut GmuxState, mon: *mut Monitor) {
-    let monitor = unsafe { &mut *mon };
-    let mut x = 0;
+fn drawbar(state: &mut GmuxState, m: *mut Monitor) {
+    let monitor = unsafe { &mut *m };
 
-    state.drw.rect(x, 0, monitor.ww as u32, state.bh as u32, true, true);
-    for i in 0..TAGS.len() {
-        if (monitor.tagset[monitor.seltags as usize] & (1 << i)) != 0 {
-            unsafe { state.drw.scheme = *state.scheme.add(Scheme::Sel as usize) };
-        } else {
-            unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-        }
-        let w = TAGS[i].len();
-        x = state.drw.text(x, 0, w as u32, state.bh as u32, 2, TAGS[i], false);
+    // variables similar to dwm
+    let mut x = 0;
+    let mut tw = 0;
+
+    // base bar background
+    unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
+    // filled, invert=true so rectangle uses ColBg, matching dwm background
+    state.drw.rect(0, 0, monitor.ww as u32, state.bh as u32, true, true);
+
+    // draw status text on selected monitor first so tags can overdraw if needed
+    if m == state.selmon {
+        unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
+        let status = unsafe {
+            CStr::from_ptr(state.stext.as_ptr()).to_str().unwrap_or("")
+        };
+        tw = state.drw.text_width(status) + 2; // 2px right padding
+        state.drw.text(monitor.ww - tw as i32, 0, tw, state.bh as u32, 0, status, false);
     }
 
-    let ltsymbol = unsafe { CStr::from_ptr(monitor.ltsymbol.as_ptr()).to_str().unwrap() };
-    let w = ltsymbol.len();
-    state.drw.text(x, 0, w as u32, state.bh as u32, 2, ltsymbol, false);
+    // tags
+    for i in 0..TAGS.len() {
+        let sel = (monitor.tagset[monitor.seltags as usize] & 1 << i) != 0;
+        unsafe { state.drw.scheme = *state.scheme.add(if sel { Scheme::Sel } else { Scheme::Norm } as usize) };
+        let w = state.drw.text_width(TAGS[i]) + state.lrpad as u32;
+        state.drw.text(x, 0, w, state.bh as u32, (state.lrpad / 2) as u32, TAGS[i], false);
+        x += w as i32;
+    }
 
+    // layout symbol
+    let ltsymbol = unsafe { CStr::from_ptr(monitor.ltsymbol.as_ptr()).to_str().unwrap_or("") };
+    unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
+    let w = state.drw.text_width(ltsymbol) + state.lrpad as u32;
+    state.drw.text(x, 0, w, state.bh as u32, (state.lrpad / 2) as u32, ltsymbol, false);
+
+    // map final pixmap
     state.drw.map(monitor.barwin, 0, 0, monitor.ww as u32, state.bh as u32);
 }
 
@@ -387,22 +410,34 @@ fn setup(state: &mut GmuxState) {
         state.root = xlib::XRootWindow(state.dpy, state.screen);
         state.drw = Drw::create(state.dpy, state.screen, state.root, state.sw as u32, state.sh as u32);
         
-        let fonts = &["monospace:size=10"];
+        let fonts = &[FONT];
         if !state.drw.fontset_create(fonts) {
             die("no fonts could be loaded.");
         }
 
+        // derive bar height and lrpad from font height like dwm
+        if !state.drw.fonts.is_empty() {
+            let h = state.drw.fonts[0].h as i32;
+            state.bh = h + 2;
+            state.lrpad = h + 2;
+        }
+
+        // color arrays are [ColFg, ColBg, ColBorder] following dwm
         let colors = &[
-            &["#222222", "#444444", "#bbbbbb"],
-            &["#005577", "#eeeeee", "#005577"],
+            &["#bbbbbb", "#222222", "#444444"], // SchemeNorm
+            &["#eeeeee", "#005577", "#005577"], // SchemeSel
         ];
         state.scheme = ecalloc(colors.len(), std::mem::size_of::<*mut Clr>()) as *mut *mut Clr;
         for i in 0..colors.len() {
             *state.scheme.add(i) = state.drw.scm_create(colors[i]);
         }
 
-        state.bh = 24; // Simplified for now
-        
+        // initialise status text sample
+        let sample_status = b"gmux";
+        for (i, b) in sample_status.iter().enumerate() {
+            state.stext[i] = *b as i8;
+        }
+
         drawbars(state);
 
         let _utf8_string_name = CString::new("UTF8_STRING").unwrap();

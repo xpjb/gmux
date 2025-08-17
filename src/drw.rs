@@ -45,6 +45,25 @@ pub enum Scheme {
 }
 
 impl Drw {
+    /// Return pixel width of UTF-8 text using the first font in the set.
+    pub fn text_width(&self, text: &str) -> u32 {
+        if self.fonts.is_empty() {
+            return 0;
+        }
+        unsafe {
+            let mut ext = std::mem::zeroed();
+            let font = &self.fonts[0];
+            xft::XftTextExtentsUtf8(
+                self.dpy,
+                font.xfont,
+                text.as_ptr() as *const u8,
+                text.len() as i32,
+                &mut ext,
+            );
+            ext.xOff as u32
+        }
+    }
+
     pub fn create(
         dpy: *mut xlib::Display,
         screen: c_int,
