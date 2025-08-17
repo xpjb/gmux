@@ -21,8 +21,17 @@ const X_GRAB_BUTTON: u8 = 28;
 const X_GRAB_KEY: u8 = 33;
 const X_COPY_AREA: u8 = 62;
 
+// Simple X11 error handler that ignores non-fatal errors like BadWindow so gmux
+// doesn’t exit (mirrors dwm’s default behaviour).
+#[allow(unused_variables)]
+unsafe extern "C" fn xerror_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+    // Always return 0 to tell Xlib that the error was handled.
+    0
+}
+
 /* ========= configurable constants (similar to dwm's config.h) ========= */
-const FONT: &str = "monospace:size=16"; // change size here to scale bar text
+const FONT: &str = "monospace:size=24"; // change size here to scale bar text
+const BORDERPX: i32 = 2;
 // ======================================================================
 
 fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
@@ -455,12 +464,12 @@ fn setup(state: &mut GmuxState) {
         let net_wm_window_type_dialog_name = CString::new("_NET_WM_WINDOW_TYPE_DIALOG").unwrap();
         let net_client_list_name = CString::new("_NET_CLIENT_LIST").unwrap();
 
-        state.wmatom[WM::Protocols as usize] = xlib::XInternAtom(state.dpy, wm_protocols_name.as_ptr(), 0);
-        state.wmatom[WM::Delete as usize] = xlib::XInternAtom(state.dpy, wm_delete_name.as_ptr(), 0);
-        state.wmatom[WM::State as usize] = xlib::XInternAtom(state.dpy, wm_state_name.as_ptr(), 0);
-        state.wmatom[WM::TakeFocus as usize] = xlib::XInternAtom(state.dpy, wm_take_focus_name.as_ptr(), 0);
-        state.netatom[Net::ActiveWindow as usize] = xlib::XInternAtom(state.dpy, net_active_window_name.as_ptr(), 0);
-        state.netatom[Net::Supported as usize] = xlib::XInternAtom(state.dpy, net_supported_name.as_ptr(), 0);
+        state.wmatom[WM::Protocols as usize] = unsafe { xlib::XInternAtom(state.dpy, wm_protocols_name.as_ptr(), 0) };
+        state.wmatom[WM::Delete as usize] = unsafe { xlib::XInternAtom(state.dpy, wm_delete_name.as_ptr(), 0) };
+        state.wmatom[WM::State as usize] = unsafe { xlib::XInternAtom(state.dpy, wm_state_name.as_ptr(), 0) };
+        state.wmatom[WM::TakeFocus as usize] = unsafe { xlib::XInternAtom(state.dpy, wm_take_focus_name.as_ptr(), 0) };
+        state.netatom[Net::ActiveWindow as usize] = unsafe { xlib::XInternAtom(state.dpy, net_active_window_name.as_ptr(), 0) };
+        state.netatom[Net::Supported as usize] = unsafe { xlib::XInternAtom(state.dpy, net_supported_name.as_ptr(), 0) };
         state.netatom[Net::WMName as usize] = xlib::XInternAtom(state.dpy, net_wm_name_name.as_ptr(), 0);
         state.netatom[Net::WMState as usize] = xlib::XInternAtom(state.dpy, net_wm_state_name.as_ptr(), 0);
         state.netatom[Net::WMCheck as usize] = xlib::XInternAtom(state.dpy, net_wm_check_name.as_ptr(), 0);
@@ -477,6 +486,16 @@ fn setup(state: &mut GmuxState) {
         monitor.nmaster = 1;
         monitor.showbar = true;
         monitor.topbar = true;
+        // Calculate window area accounting for the bar height
+        if monitor.showbar {
+            monitor.by = if monitor.topbar { 0 } else { state.sh - state.bh };
+            monitor.wy = if monitor.topbar { state.bh } else { 0 };
+            monitor.wh = state.sh - state.bh;
+        } else {
+            monitor.by = -state.bh;
+            monitor.wy = 0;
+            monitor.wh = state.sh;
+        }
         monitor.lt[0] = &LAYOUTS[0];
         monitor.lt[1] = &LAYOUTS[1];
         monitor.ltsymbol = [0; 16];
@@ -486,9 +505,7 @@ fn setup(state: &mut GmuxState) {
         let src = c_symbol.as_ptr();
         std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
         monitor.wx = 0;
-        monitor.wy = 0;
         monitor.ww = state.sw;
-        monitor.wh = state.sh;
         let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
         wa.override_redirect = 1;
         wa.background_pixmap = xlib::ParentRelative as u64;
@@ -538,10 +555,17 @@ fn setup(state: &mut GmuxState) {
             | xlib::KeyPressMask) as i64;
         xlib::XChangeWindowAttributes(state.dpy, state.root, (xlib::CWEventMask | xlib::CWCursor) as u64, &mut wa);
         xlib::XSelectInput(state.dpy, state.root, wa.event_mask);
+
+        // Update NumLockMask and grab global keys
+        updatenumlockmask(state);
+        unsafe { register_grabkeys(state); }
+
         state.handler[xlib::ButtonPress as usize] = Some(buttonpress);
         state.handler[xlib::MotionNotify as usize] = Some(motionnotify);
         state.handler[xlib::KeyPress as usize] = Some(keypress_wrapper);
         state.handler[xlib::MapRequest as usize] = Some(maprequest);
+        state.handler[xlib::DestroyNotify as usize] = Some(destroy_notify);
+        state.handler[xlib::EnterNotify as usize] = Some(enter_notify);
 
         focus(state, null_mut());
     }
@@ -618,7 +642,49 @@ unsafe extern "C" fn spawn(_state: &mut GmuxState, arg: &Arg) {
 #[allow(dead_code)]
 unsafe extern "C" fn togglebar(_state: &mut GmuxState, _arg: &Arg) {}
 #[allow(dead_code)]
-unsafe extern "C" fn focusstack(_state: &mut GmuxState, _arg: &Arg) {}
+unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
+    let selmon = &mut *state.selmon;
+    if selmon.sel.is_null() {
+        return;
+    }
+    let mut c: *mut Client = std::ptr::null_mut();
+    if arg.i > 0 {
+        // forward direction
+        c = (*selmon.sel).next;
+        while !c.is_null() && !is_visible(&*c) {
+            c = (*c).next;
+        }
+        if c.is_null() {
+            // wrap around
+            c = selmon.clients;
+            while !c.is_null() && !is_visible(&*c) {
+                c = (*c).next;
+            }
+        }
+    } else {
+        // backward direction – we need previous visible client
+        let mut i_ptr = selmon.clients;
+        while i_ptr != selmon.sel {
+            if is_visible(&*i_ptr) {
+                c = i_ptr;
+            }
+            i_ptr = (*i_ptr).next;
+        }
+        if c.is_null() {
+            // none before sel, iterate from sel onwards to end
+            while !i_ptr.is_null() {
+                if is_visible(&*i_ptr) {
+                    c = i_ptr;
+                }
+                i_ptr = (*i_ptr).next;
+            }
+        }
+    }
+    if !c.is_null() {
+        focus(state, c);
+        restack(state, state.selmon);
+    }
+}
 #[allow(dead_code)]
 unsafe extern "C" fn incnmaster(state: &mut GmuxState, arg: &Arg) {
     let selmon = unsafe { &mut *state.selmon };
@@ -667,7 +733,51 @@ unsafe extern "C" fn zoom(state: &mut GmuxState, _arg: &Arg) {
 #[allow(dead_code)]
 unsafe extern "C" fn view(_state: &mut GmuxState, _arg: &Arg) {}
 #[allow(dead_code)]
-unsafe extern "C" fn killclient(_state: &mut GmuxState, _arg: &Arg) {}
+unsafe extern "C" fn killclient(state: &mut GmuxState, _arg: &Arg) {
+    let selmon = &*state.selmon;
+    if selmon.sel.is_null() {
+        return;
+    }
+    if !sendevent(state, selmon.sel, state.wmatom[WM::Delete as usize]) {
+        xlib::XGrabServer(state.dpy);
+        // xlib::XSetErrorHandler(xerrordummy);
+        xlib::XSetCloseDownMode(state.dpy, xlib::DestroyAll);
+        xlib::XKillClient(state.dpy, (*selmon.sel).win);
+        xlib::XSync(state.dpy, 0);
+        // xlib::XSetErrorHandler(xerror);
+        xlib::XUngrabServer(state.dpy);
+    }
+}
+
+#[allow(dead_code)]
+unsafe fn sendevent(state: &mut GmuxState, c: *mut Client, proto: xlib::Atom) -> bool {
+    let mut n = 0;
+    let mut protocols: *mut xlib::Atom = std::ptr::null_mut();
+    let mut exists = false;
+
+    if xlib::XGetWMProtocols(state.dpy, (*c).win, &mut protocols, &mut n) != 0 {
+        let mut i = n;
+        while !exists && i > 0 {
+            i -= 1;
+            exists = *protocols.offset(i as isize) == proto;
+        }
+        xlib::XFree(protocols as *mut c_void);
+    }
+
+    if exists {
+        let mut ev: xlib::XEvent = std::mem::zeroed();
+        ev.client_message.type_ = xlib::ClientMessage;
+        ev.client_message.window = (*c).win;
+        ev.client_message.message_type = state.wmatom[WM::Protocols as usize];
+        ev.client_message.format = 32;
+        ev.client_message.data.set_long(0, proto as i64);
+        ev.client_message.data.set_long(1, xlib::CurrentTime as i64);
+        xlib::XSendEvent(state.dpy, (*c).win, 0, xlib::NoEventMask, &mut ev);
+    }
+
+    exists
+}
+
 #[allow(dead_code)]
 unsafe extern "C" fn setlayout(state: &mut GmuxState, arg: &Arg) {
     let v_ptr = unsafe { arg.v.0 };
@@ -844,49 +954,82 @@ unsafe fn arrange(state: &mut GmuxState, m: *mut Monitor) {
 
 #[allow(dead_code)]
 unsafe fn arrange_mon(state: &mut GmuxState, m: *mut Monitor) {
+    if m.is_null() {
+        return;
+    }
+    // call current layout's arrange
     let mon = unsafe { &mut *m };
+    if mon.lt[mon.sellt as usize].is_null() {
+        return;
+    }
     let layout = unsafe { &*mon.lt[mon.sellt as usize] };
-    unsafe { (layout.arrange)(state, m) };
+    (layout.arrange)(state, m);
 }
 
 #[allow(dead_code)]
-fn show_hide(_state: &mut GmuxState, _c: *mut Client) {
-    // For now, this is a stub
+unsafe fn show_hide(state: &mut GmuxState, c: *mut Client) {
+    if c.is_null() {
+        return;
+    }
+    if is_visible(&*c) {
+        // Show clients top down
+        unsafe { xlib::XMoveWindow(state.dpy, (*c).win, (*c).x, (*c).y); }
+        if ((*(*c).mon).lt[(*(*c).mon).sellt as usize]).is_null()
+            || (*c).isfloating
+                && !(*c).isfullscreen
+        {
+            // For floating or unmanaged layout, ensure correct size
+            unsafe { resize(state, c, (*c).x, (*c).y, (*c).w, (*c).h, false); }
+        }
+        show_hide(state, (*c).snext);
+    } else {
+        // Hide clients bottom up
+        show_hide(state, (*c).snext);
+        unsafe { xlib::XMoveWindow(state.dpy, (*c).win, -2 * client_width(&*c), (*c).y); }
+    }
 }
 
 #[allow(dead_code)]
 unsafe fn restack(state: &mut GmuxState, m: *mut Monitor) {
-    drawbar(state, m);
-    let mon = unsafe { &*m };
-    if mon.sel.is_null() {
+    if m.is_null() {
         return;
     }
-    let sel = unsafe { &*mon.sel };
-    if sel.isfloating || (unsafe { &*mon.lt[mon.sellt as usize] }.arrange as usize == 0) {
-        unsafe { xlib::XRaiseWindow(state.dpy, sel.win) };
+    drawbar(state, m);
+    if (*m).sel.is_null() {
+        return;
     }
-    if !(unsafe { &*mon.lt[mon.sellt as usize] }.arrange as usize == 0) {
-        let mut wc: xlib::XWindowChanges = unsafe { std::mem::zeroed() };
-        wc.stack_mode = xlib::Below;
-        wc.sibling = mon.barwin;
-        let mut c = mon.stack;
+    if (*(*m).sel).isfloating || ((*m).lt[(*m).sellt as usize]).is_null() {
+        xlib::XRaiseWindow(state.dpy, (*(*m).sel).win);
+    }
+
+    if !((*m).lt[(*m).sellt as usize]).is_null() {
+        let mut wc: xlib::XWindowChanges = std::mem::zeroed();
+        wc.stack_mode = xlib::Below as i32;
+        wc.sibling = (*m).barwin;
+        let mut c = (*m).stack;
         while !c.is_null() {
-            let client = unsafe { &*c };
-            if !client.isfloating && is_visible(client) {
-                unsafe {
-                    xlib::XConfigureWindow(
-                        state.dpy,
-                        client.win,
-                        (xlib::CWSibling | xlib::CWStackMode) as u32,
-                        &mut wc,
-                    )
-                };
-                wc.sibling = client.win;
+            if !(*c).isfloating && is_visible(&*c) {
+                xlib::XConfigureWindow(state.dpy, (*c).win, (xlib::CWSibling | xlib::CWStackMode) as u32, &mut wc);
+                wc.sibling = (*c).win;
             }
-            c = client.snext;
+            c = (*c).snext;
         }
     }
-    unsafe { xlib::XSync(state.dpy, 0) };
+    xlib::XSync(state.dpy, 0);
+}
+
+#[allow(dead_code)]
+unsafe fn unmanage(state: &mut GmuxState, c: *mut Client, _destroyed: bool) {
+    if c.is_null() {
+        return;
+    }
+    detach(state, c);
+    detachstack(state, c);
+    arrange(state, (*c).mon);
+    xlib::XUngrabButton(state.dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, (*c).win);
+    xlib::XSetWindowBorder(state.dpy, (*c).win, 0);
+    xlib::XRemoveFromSaveSet(state.dpy, (*c).win);
+    xlib::XDestroyWindow(state.dpy, (*c).win);
 }
 
 #[allow(dead_code)]
@@ -918,6 +1061,25 @@ unsafe fn attachstack(_state: &mut GmuxState, c: *mut Client) {
     let mon = unsafe { &mut *(*c).mon };
     unsafe { (*c).snext = mon.stack };
     mon.stack = c;
+}
+
+#[allow(dead_code)]
+unsafe fn detachstack(_state: &mut GmuxState, c: *mut Client) {
+    let mon = &mut *(*c).mon;
+    let mut tc = &mut mon.stack;
+    while !(*tc).is_null() && *tc != c {
+        tc = &mut (**tc).snext;
+    }
+    *tc = (*c).snext;
+}
+
+// DestroyNotify handler to unmanage windows
+unsafe extern "C" fn destroy_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    let ev = &*(e as *mut xlib::XDestroyWindowEvent);
+    let c = wintoclient(state, ev.window);
+    if !c.is_null() {
+        unmanage(state, c, true);
+    }
 }
 
 #[allow(dead_code)]
@@ -1048,6 +1210,24 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
     }
 }
 
+// Focus follows mouse when pointer enters a client window
+#[allow(dead_code)]
+unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    let ev = &*(e as *mut xlib::XCrossingEvent);
+    // ignore non-normal or inferior events (same filtering as dwm)
+    if (ev.mode != xlib::NotifyNormal as i32) || ev.detail == xlib::NotifyInferior as i32 {
+        return;
+    }
+    // when entering root, ignore; bar handled elsewhere
+    if ev.window == state.root {
+        return;
+    }
+    let c = wintoclient(state, ev.window);
+    if !c.is_null() && c != (*state.selmon).sel {
+        focus(state, c);
+    }
+}
+
 #[allow(dead_code)]
 unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &mut (*(e as *mut xlib::XMapRequestEvent)) };
@@ -1077,6 +1257,8 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
     client.oldw = wa.width;
     client.oldh = wa.height;
     client.oldbw = wa.border_width;
+    // Assign to currently selected tag set so client is visible
+    client.tags = unsafe { (*state.selmon).tagset[(*state.selmon).seltags as usize] };
     client.mon = state.selmon;
 
     // updatetitle(c);
@@ -1086,6 +1268,8 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
     unsafe {
         attach(state, c);
         attachstack(state, c);
+        // Recalculate tiling/layout with the newly added client
+        unsafe { arrange(state, state.selmon) };
     }
 
     // ... More logic to come ...
@@ -1203,7 +1387,7 @@ unsafe fn next_tiled(mut c: *mut Client) -> *mut Client {
 
 #[allow(dead_code)]
 unsafe fn resize(
-    _state: &mut GmuxState,
+    state: &mut GmuxState,
     c: *mut Client,
     x: i32,
     y: i32,
@@ -1214,11 +1398,11 @@ unsafe fn resize(
     let client = unsafe { &mut *c };
     // For now, we'll just resize without applying size hints
     // applysizehints logic will be added later.
-    unsafe { resize_client(client, x, y, w, h) };
+    unsafe { resize_client(state, client, x, y, w, h) };
 }
 
 #[allow(dead_code)]
-unsafe fn resize_client(c: *mut Client, x: i32, y: i32, w: i32, h: i32) {
+unsafe fn resize_client(state: &mut GmuxState, c: *mut Client, x: i32, y: i32, w: i32, h: i32) {
     let client = unsafe { &mut *c };
     client.oldx = client.x;
     client.x = x;
@@ -1228,7 +1412,15 @@ unsafe fn resize_client(c: *mut Client, x: i32, y: i32, w: i32, h: i32) {
     client.w = w;
     client.oldh = client.h;
     client.h = h;
-    // XConfigureWindow call will be added later
+    let win = client.win;
+    let mut wc: xlib::XWindowChanges = std::mem::zeroed();
+    wc.x = client.x;
+    wc.y = client.y;
+    wc.width = client.w;
+    wc.height = client.h;
+    wc.border_width = BORDERPX;
+    xlib::XConfigureWindow(state.dpy, win, (xlib::CWX | xlib::CWY | xlib::CWWidth | xlib::CWHeight | xlib::CWBorderWidth) as u32, &mut wc);
+    xlib::XMoveResizeWindow(state.dpy, win, client.x, client.y, client.w as u32, client.h as u32);
 }
 
 #[allow(dead_code)]
@@ -1339,6 +1531,43 @@ fn clean_mask(mask: u32) -> u32 {
     mask & !(LOCK_MASK | xlib::Mod2Mask) & (xlib::ShiftMask | xlib::ControlMask | xlib::Mod1Mask | xlib::Mod3Mask | xlib::Mod4Mask | xlib::Mod5Mask)
 }
 
+// === NEW HELPERS ===
+#[allow(dead_code)]
+fn client_width(c: &Client) -> i32 {
+    c.w + 2 * c.bw
+}
+
+// Registers all keyboard shortcuts on the root window, similar to dwm's grabkeys
+unsafe fn register_grabkeys(state: &mut GmuxState) {
+    // Build the key list (same one used elsewhere)
+    let keys = grabkeys(state);
+
+    // Prepare modifier combinations (with and without NumLock/CapsLock)
+    let modifiers: [u32; 4] = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
+
+    // Clear previous grabs
+    xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, state.root);
+
+    // Register all keys
+    for key in keys {
+        let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
+        if code == 0 {
+            continue;
+        }
+        for m in modifiers.iter() {
+            xlib::XGrabKey(
+                state.dpy,
+                code as c_int,
+                key.mask | *m,
+                state.root,
+                1,
+                xlib::GrabModeAsync,
+                xlib::GrabModeAsync,
+            );
+        }
+    }
+}
+
 fn main() {
     println!("Starting gmux...");
     let mut state = GmuxState {
@@ -1389,6 +1618,9 @@ fn main() {
         if state.dpy.is_null() {
             panic!("dwm: cannot open display");
         }
+        // Install permissive X error handler so expected errors (BadWindow, etc.)
+        // don’t terminate the WM when closing windows.
+        xlib::XSetErrorHandler(Some(xerror_ignore));
         
         // checkotherwm(&mut state);
         setup(&mut state);
