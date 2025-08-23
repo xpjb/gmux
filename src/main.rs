@@ -1079,7 +1079,6 @@ unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
 
     for (i, &client_idx) in tiled_client_indices.iter().enumerate() {
         let client_bw = state.mons[mon_idx].clients[client_idx].bw;
-        let client_h = state.mons[mon_idx].clients[client_idx].h;
         
         if i < nmaster as usize {
             let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
@@ -1093,8 +1092,8 @@ unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
                 h - (2 * client_bw),
                 false,
             );
-            if my + client_h < wh {
-                my += client_h;
+            if my + h < wh {
+                my += h;
             }
         } else {
             let h = (wh - ty) / (n - i) as i32;
@@ -1108,8 +1107,8 @@ unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
                 h - (2 * client_bw),
                 false,
             );
-            if ty + client_h < wh {
-                ty += client_h;
+            if ty + h < wh {
+                ty += h;
             }
         }
     }
@@ -1157,7 +1156,7 @@ fn show_hide(state: &mut GmuxState, mon_idx: usize, stack: &[usize]) {
 }
 
 
-unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, _destroyed: bool) {
+unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, destroyed: bool) {
     let client = if let Some(c) = detach(state, mon_idx, client_idx) {
         c
     } else {
@@ -1165,11 +1164,16 @@ unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, _de
     };
     let dpy = state.dpy;
     detachstack(state, mon_idx, client_idx);
+    
+    if !destroyed {
+        xlib::XUngrabButton(dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, client.win);
+        xlib::XSetWindowBorder(dpy, client.win, 0);
+        xlib::XRemoveFromSaveSet(dpy, client.win);
+    }
+    
+    let new_sel = state.mons[mon_idx].sel;
+    focus(state, mon_idx, new_sel);
     state.arrange(Some(mon_idx));
-    xlib::XUngrabButton(dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, client.win);
-    xlib::XSetWindowBorder(dpy, client.win, 0);
-    xlib::XRemoveFromSaveSet(dpy, client.win);
-    xlib::XDestroyWindow(dpy, client.win);
 }
 
 
@@ -1191,7 +1195,11 @@ unsafe fn detach(state: &mut GmuxState, mon_idx: usize, client_idx: usize) -> Op
 
     if let Some(sel) = mon.sel {
         if sel == client_idx {
-            mon.sel = None;
+            if mon.clients.is_empty() {
+                mon.sel = None;
+            } else {
+                mon.sel = Some(client_idx.min(mon.clients.len() - 1));
+            }
         } else if sel > client_idx {
             mon.sel = Some(sel - 1);
         }
