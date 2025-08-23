@@ -1,2 +1,1 @@
-Good morning,
-So as you may be aware, we are porting dwm from C to rust. Please continue adding features. we still arent doing real layouts and alt shift c doesnt close yet. Do not run it, just cargo check. leave running it to me. you can refer to the dwm subfolder. It is definitely here in the local files. try to match it 1:1 (except in some places i have used vecs instead linked lists - eventually i will migrate all but dont worry about that for now, i think you just have to add basic xapi stuff). Never change any libraries
+nb, drw module is the only thing, and its probs pretty shit lol, can it mostly be moved into xwrapper or what lol

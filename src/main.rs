@@ -11,7 +11,7 @@ mod command;
 mod drw;
 use command::*;
 use drw::{Drw, Scheme};
-use xwrapper::{Window, XWrapper};
+use xwrapper::{KeySpec, Window, XWrapper};
 
 // From <X11/Xproto.h>
 const X_SET_INPUT_FOCUS: u8 = 42;
@@ -464,7 +464,7 @@ impl GmuxState {
             let sel_idx = m.sel.unwrap();
             let sel = &m.clients[sel_idx];
             if sel.isfloating || m.lt.get(m.sellt as usize).is_none() {
-                unsafe { xlib::XRaiseWindow(dpy, sel.win.0) };
+                self.xwrapper.raise_window(sel.win);
             }
             if m.lt.get(m.sellt as usize).is_some() {
                 let mut wc: xlib::XWindowChanges = unsafe { std::mem::zeroed() };
@@ -476,9 +476,14 @@ impl GmuxState {
                     if !c.isfloating && is_visible(c, m) {
                         let win = c.win;
                         let cf = xlib::CWStackMode | xlib::CWSibling;
-                        unsafe {
-                            xlib::XConfigureWindow(dpy, win.0, cf as u32, &mut wc);
-                        }
+                        self.xwrapper.configure_window(
+                            win,
+                            c.x,
+                            c.y,
+                            c.w,
+                            c.h,
+                            c.bw,
+                        );
                     }
                 }
             }
@@ -493,9 +498,14 @@ impl GmuxState {
                 let c = &m.clients[c_idx];
                 if c.isfloating {
                     let win = c.win;
-                    unsafe {
-                        xlib::XConfigureWindow(dpy, win.0, cf as u32, &mut wc);
-                    }
+                    self.xwrapper.configure_window(
+                        win,
+                        c.x,
+                        c.y,
+                        c.w,
+                        c.h,
+                        c.bw,
+                    );
                 }
             }
         }
@@ -565,13 +575,11 @@ fn checkotherwm(state: &mut GmuxState) {
     unsafe {
         state.xwrapper.set_error_handler(Some(xerror_start_handler));
         let root = state.xwrapper.root_window(state.xwrapper.default_screen());
-        xlib::XSelectInput(
-            state.xwrapper.dpy(),
-            root.0,
-            xlib::SubstructureRedirectMask,
-        );
-        xlib::XSync(state.xwrapper.dpy(), 0);
-        
+        state
+            .xwrapper
+            .select_input_for_substructure_redirect(root);
+        state.xwrapper.sync(false);
+
         let display_ptr = state.xwrapper.dpy() as *mut GmuxState;
         std::ptr::write(display_ptr, std::ptr::read(state_ptr));
 
@@ -580,7 +588,7 @@ fn checkotherwm(state: &mut GmuxState) {
         }
 
         state.xwrapper.set_error_handler(Some(xerror_handler));
-        xlib::XSync(state.xwrapper.dpy(), 0);
+        state.xwrapper.sync(false);
     }
 }
 
@@ -666,9 +674,9 @@ fn setup(state: &mut GmuxState) {
         wa.override_redirect = 1;
         wa.background_pixmap = xlib::ParentRelative as u64;
         wa.event_mask = xlib::ButtonPressMask | xlib::ExposureMask;
-        let barwin = xlib::XCreateWindow(
-            state.xwrapper.dpy(),
-            state.root.0,
+        let valuemask = xlib::CWOverrideRedirect | xlib::CWBackPixmap | xlib::CWEventMask;
+        let barwin = state.xwrapper.create_window(
+            state.root,
             mon.wx,
             mon.by,
             mon.ww as u32,
@@ -677,10 +685,10 @@ fn setup(state: &mut GmuxState) {
             state.xwrapper.default_depth(state.screen),
             xlib::InputOutput as u32,
             state.xwrapper.default_visual(state.screen),
-            (xlib::CWOverrideRedirect | xlib::CWBackPixmap | xlib::CWEventMask) as u64,
+            valuemask as u64,
             &mut wa,
         );
-        mon.barwin = Window(barwin);
+        mon.barwin = barwin;
         state.xwrapper.map_raised(mon.barwin);
         state.mons.push(mon);
         state.selmon = state.mons.len() - 1;
@@ -715,7 +723,17 @@ fn setup(state: &mut GmuxState) {
 
         // Update NumLockMask and grab global keys
         state.numlockmask = state.xwrapper.get_numlock_mask();
-        unsafe { register_grabkeys(state); }
+        let keys = grabkeys(state);
+        let key_specs: Vec<KeySpec> = keys
+            .iter()
+            .map(|k| KeySpec {
+                mask: k.mask,
+                keysym: k.keysym,
+            })
+            .collect();
+        state
+            .xwrapper
+            .grab_keys(state.root, state.numlockmask, &key_specs);
 
         state.handler[xlib::ButtonPress as usize] = Some(buttonpress);
         state.handler[xlib::MotionNotify as usize] = Some(motionnotify);
@@ -918,15 +936,13 @@ unsafe extern "C" fn killclient(state: &mut GmuxState, _arg: &Arg) {
         let sel_client_tags = state.mons[selmon_idx].clients[sel_idx].tags;
         let sel_client = Client { win: sel_client_win, tags: sel_client_tags, ..state.mons[selmon_idx].clients[sel_idx] };
         if !sendevent(state, &sel_client, state.wmatom[WM::Delete as usize]) {
-            xlib::XGrabServer(state.xwrapper.dpy());
-            unsafe {
-                state.xwrapper.set_error_handler(Some(xerror_dummy));
-                xlib::XSetCloseDownMode(state.xwrapper.dpy(), xlib::DestroyAll);
-                xlib::XKillClient(state.xwrapper.dpy(), sel_client.win.0);
-                xlib::XSync(state.xwrapper.dpy(), 0);
-                state.xwrapper.set_error_handler(Some(xerror));
-                xlib::XUngrabServer(state.xwrapper.dpy());
-            }
+            state.xwrapper.grab_server();
+            state.xwrapper.set_error_handler(Some(xerror_dummy));
+            state.xwrapper.set_close_down_mode(xlib::DestroyAll);
+            state.xwrapper.kill_client(sel_client.win);
+            state.xwrapper.sync(false);
+            state.xwrapper.set_error_handler(Some(xerror));
+            state.xwrapper.ungrab_server();
         }
     }
 }
@@ -937,32 +953,19 @@ unsafe extern "C" fn xerror_dummy(_dpy: *mut xlib::Display, _ee: *mut xlib::XErr
 }
 
 
-unsafe fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
-    let mut n = 0;
-    let mut protocols: *mut xlib::Atom = std::ptr::null_mut();
-    let mut exists = false;
-
-    if xlib::XGetWMProtocols(state.xwrapper.dpy(), c.win.0, &mut protocols, &mut n) != 0 {
-        let mut i = n;
-        while !exists && i > 0 {
-            i -= 1;
-            exists = *protocols.offset(i as isize) == proto;
-        }
-        xlib::XFree(protocols as *mut c_void);
+fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
+    let protocols = state.xwrapper.get_wm_protocols(c.win);
+    if protocols.contains(&proto) {
+        let mut data = [0; 5];
+        data[0] = proto as i64;
+        data[1] = xlib::CurrentTime as i64;
+        state
+            .xwrapper
+            .send_client_message(c.win, state.wmatom[WM::Protocols as usize], data);
+        true
+    } else {
+        false
     }
-
-    if exists {
-        let mut ev: xlib::XEvent = std::mem::zeroed();
-        ev.client_message.type_ = xlib::ClientMessage;
-        ev.client_message.window = c.win.0;
-        ev.client_message.message_type = state.wmatom[WM::Protocols as usize];
-        ev.client_message.format = 32;
-        ev.client_message.data.set_long(0, proto as i64);
-        ev.client_message.data.set_long(1, xlib::CurrentTime as i64);
-        xlib::XSendEvent(state.xwrapper.dpy(), c.win.0, 0, xlib::NoEventMask, &mut ev);
-    }
-
-    exists
 }
 
 
@@ -1128,7 +1131,7 @@ fn show_hide(state: &mut GmuxState, mon_idx: usize, stack: &[usize]) {
     for &c_idx in stack.iter().rev() {
         let c = &state.mons[mon_idx].clients[c_idx];
         if is_visible(c, &state.mons[c.mon_idx]) {
-            unsafe { xlib::XMoveWindow(state.xwrapper.dpy(), c.win.0, c.x, c.y) };
+            state.xwrapper.move_window(c.win, c.x, c.y);
             if state.mons[c.mon_idx].lt.get(state.mons[c.mon_idx].sellt as usize).is_none()
                 || c.isfloating && !c.isfullscreen
             {
@@ -1140,7 +1143,7 @@ fn show_hide(state: &mut GmuxState, mon_idx: usize, stack: &[usize]) {
     for &c_idx in stack {
         let c = &state.mons[mon_idx].clients[c_idx];
         if !is_visible(c, &state.mons[c.mon_idx]) {
-            unsafe { xlib::XMoveWindow(state.xwrapper.dpy(), c.win.0, -2 * client_width(c), c.y) };
+            state.xwrapper.move_window(c.win, -2 * client_width(c), c.y);
         }
     }
 }
@@ -1152,13 +1155,10 @@ unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, des
     } else {
         return;
     };
-    let dpy = state.xwrapper.dpy();
     detachstack(state, mon_idx, client_idx);
     
     if !destroyed {
-        xlib::XUngrabButton(dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, client.win.0);
-        xlib::XSetWindowBorder(dpy, client.win.0, 0);
-        xlib::XRemoveFromSaveSet(dpy, client.win.0);
+        state.xwrapper.unmanage_window(client.win);
     }
     
     let new_sel = state.mons[mon_idx].sel;
@@ -1262,35 +1262,24 @@ unsafe fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
         // attachstack(c);
         grabbuttons(state, new_mon_idx, idx, true);
         let keys = grabkeys(state);
-        let dpy = state.xwrapper.dpy();
-        let numlockmask = state.numlockmask;
-        let modifiers = [0, xlib::LockMask, numlockmask, numlockmask | xlib::LockMask];
-        for key in keys.iter() {
-            unsafe {
-                let code = xlib::XKeysymToKeycode(dpy, key.keysym as u64);
-                if code != 0 {
-                    for modifier in modifiers.iter() {
-                        xlib::XGrabKey(
-                            dpy,
-                            code as c_int,
-                            key.mask | *modifier,
-                            c_win.0,
-                            1,
-                            xlib::GrabModeAsync,
-                            xlib::GrabModeAsync,
-                        );
-                    }
-                }
-            }
-        }
+        let key_specs: Vec<KeySpec> = keys
+            .iter()
+            .map(|k| KeySpec {
+                mask: k.mask,
+                keysym: k.keysym,
+            })
+            .collect();
+        state
+            .xwrapper
+            .grab_keys(c_win, state.numlockmask, &key_specs);
         // XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
-        unsafe { xlib::XSetInputFocus(state.xwrapper.dpy(), c_win.0, xlib::RevertToPointerRoot, xlib::CurrentTime) };
+        state
+            .xwrapper
+            .set_input_focus(c_win, xlib::RevertToPointerRoot);
     } else {
-        let dpy = state.xwrapper.dpy();
-        let root = state.root;
-        unsafe {
-            xlib::XSetInputFocus(dpy, root.0, xlib::RevertToPointerRoot, xlib::CurrentTime)
-        };
+        state
+            .xwrapper
+            .set_input_focus(state.root, xlib::RevertToPointerRoot);
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
     }
     state.mons[state.selmon].sel = c_idx;
@@ -1306,12 +1295,12 @@ unsafe fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus:
     }
     let c_win = state.mons[mon_idx].clients[c_idx].win;
     grabbuttons(state, mon_idx, c_idx, false);
-    unsafe { xlib::XUngrabKey(state.xwrapper.dpy(), xlib::AnyKey, xlib::AnyModifier, c_win.0) };
+    state.xwrapper.ungrab_keys(c_win);
     // XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
     if setfocus {
-        unsafe {
-            xlib::XSetInputFocus(state.xwrapper.dpy(), state.root.0, xlib::RevertToPointerRoot, xlib::CurrentTime)
-        };
+        state
+            .xwrapper
+            .set_input_focus(state.root, xlib::RevertToPointerRoot);
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
     }
 }
@@ -1354,7 +1343,7 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
     } else if let Some((mon_idx, client_idx)) = wintoclient_idx(state, ev.window) {
         focus(state, mon_idx, Some(client_idx));
         state.restack(state.selmon);
-        unsafe { xlib::XAllowEvents(state.xwrapper.dpy(), xlib::ReplayPointer, xlib::CurrentTime) };
+        state.xwrapper.allow_events(xlib::ReplayPointer);
         _click = Clk::ClientWin;
     }
 }
@@ -1397,15 +1386,13 @@ unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
 
 unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &mut (*(e as *mut xlib::XMapRequestEvent)) };
-    let mut wa: xlib::XWindowAttributes = unsafe { std::mem::zeroed() };
-    if unsafe { xlib::XGetWindowAttributes(state.xwrapper.dpy(), ev.window, &mut wa) } == 0 {
-        return;
-    }
-    if wa.override_redirect != 0 {
-        return;
-    }
-    if unsafe { wintoclient_idx(state, ev.window) }.is_none() {
-        unsafe { manage(state, ev.window, &mut wa) };
+    if let Ok(mut wa) = state.xwrapper.get_window_attributes(Window(ev.window)) {
+        if wa.override_redirect != 0 {
+            return;
+        }
+        if unsafe { wintoclient_idx(state, ev.window) }.is_none() {
+            unsafe { manage(state, ev.window, &mut wa) };
+        }
     }
 }
 
@@ -1461,7 +1448,7 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
         state.arrange(Some(state.selmon));
         let sel_client_idx = state.mons[state.selmon].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
         let sel_client = &state.mons[state.selmon].clients[sel_client_idx];
-        xlib::XMapWindow(state.xwrapper.dpy(), sel_client.win.0);
+        state.xwrapper.map_window(sel_client.win);
         focus(state, state.selmon, Some(sel_client_idx));
     }
 
@@ -1536,15 +1523,14 @@ unsafe fn resize(
     client.w = w;
     client.oldh = client.h;
     client.h = h;
-    let win = client.win;
-    let mut wc: xlib::XWindowChanges = std::mem::zeroed();
-    wc.x = client.x;
-    wc.y = client.y;
-    wc.width = client.w;
-    wc.height = client.h;
-    wc.border_width = BORDERPX;
-    xlib::XConfigureWindow(state.xwrapper.dpy(), win.0, (xlib::CWX | xlib::CWY | xlib::CWWidth | xlib::CWHeight | xlib::CWBorderWidth) as u32, &mut wc);
-    xlib::XMoveResizeWindow(state.xwrapper.dpy(), win.0, client.x, client.y, client.w as u32, client.h as u32);
+    state.xwrapper.configure_window(
+        client.win,
+        client.x,
+        client.y,
+        client.w,
+        client.h,
+        BORDERPX,
+    );
 }
 
 
@@ -1554,33 +1540,13 @@ fn is_visible(c: &Client, m: &Monitor) -> bool {
 
 
 fn scan(state: &mut GmuxState) {
-    unsafe {
-        let mut _i: c_uint;
-        let mut num: c_uint = 0;
-        let mut d1: xlib::Window = 0;
-        let mut d2: xlib::Window = 0;
-        let mut wins: *mut xlib::Window = null_mut();
-        let mut wa: xlib::XWindowAttributes = std::mem::zeroed();
-
-        if xlib::XQueryTree(state.xwrapper.dpy(), state.root.0, &mut d1, &mut d2, &mut wins, &mut num) != 0 {
-            for i in 0..num {
-                if xlib::XGetWindowAttributes(state.xwrapper.dpy(), *wins.offset(i as isize), &mut wa) == 0
-                    || wa.override_redirect != 0
-                    || xlib::XGetTransientForHint(state.xwrapper.dpy(), *wins.offset(i as isize), &mut d1) != 0
-                {
+    if let Ok((_, _, wins)) = state.xwrapper.query_tree(state.root) {
+        for &win in &wins {
+            if let Ok(wa) = state.xwrapper.get_window_attributes(win) {
+                if wa.override_redirect != 0 || state.xwrapper.get_transient_for_hint(win).is_some() {
                     continue;
                 }
-            }
-            for i in 0..num {
-                if xlib::XGetWindowAttributes(state.xwrapper.dpy(), *wins.offset(i as isize), &mut wa) == 0 {
-                    continue;
-                }
-                if xlib::XGetTransientForHint(state.xwrapper.dpy(), *wins.offset(i as isize), &mut d1) != 0 {
-                }
-            }
-
-            if !wins.is_null() {
-                xlib::XFree(wins as *mut c_void);
+                // Potentially manage the window here if it's not already managed
             }
         }
     }
@@ -1588,14 +1554,13 @@ fn scan(state: &mut GmuxState) {
 
 
 fn run(state: &mut GmuxState) {
-    unsafe {
-        let mut ev: xlib::XEvent = std::mem::zeroed();
-        xlib::XSync(state.xwrapper.dpy(), 0);
-        while state.running != 0 && xlib::XNextEvent(state.xwrapper.dpy(), &mut ev) == 0 {
-            let event_type = ev.get_type();
+    state.xwrapper.sync(false);
+    while state.running != 0 {
+        if let Some(mut ev) = state.xwrapper.next_event() {
+            let event_type = unsafe { ev.get_type() };
             if (event_type as usize) < state.handler.len() {
                 if let Some(h) = state.handler[event_type as usize] {
-                    h(state, &mut ev);
+                    unsafe { h(state, &mut ev) };
                 }
             }
         }
@@ -1610,9 +1575,7 @@ fn cleanup(state: &mut GmuxState) {
             unsafe { unmanage(state, i, c_idx, false) };
         }
     }
-    unsafe {
-        xlib::XUngrabKey(state.xwrapper.dpy(), xlib::AnyKey as c_int, xlib::AnyModifier, state.root.0);
-    }
+    state.xwrapper.ungrab_key(state.root);
 }
 
 
@@ -1625,7 +1588,7 @@ unsafe extern "C" fn keypress_wrapper(state: &mut GmuxState, e: *mut xlib::XEven
 unsafe extern "C" fn keypress(state: &mut GmuxState, e: &mut xlib::XEvent, keys: *const Key, keys_len: usize) {
     let ev = unsafe { &*(e as *mut xlib::XEvent as *mut xlib::XKeyEvent) };
     let keys_slice = unsafe { std::slice::from_raw_parts(keys, keys_len) };
-    let keysym = unsafe { xlib::XKeycodeToKeysym(state.xwrapper.dpy(), ev.keycode as u8, 0) as u32 };
+    let keysym = state.xwrapper.keycode_to_keysym(ev.keycode) as u32;
     for key in keys_slice.iter() {
         if keysym == key.keysym
             && clean_mask(key.mask) == clean_mask(ev.state)
@@ -1661,37 +1624,6 @@ fn update_client_pointers(state: &mut GmuxState) {
             }
         }
         mon.stack = new_stack;
-    }
-}
-
-// Registers all keyboard shortcuts on the root window, similar to dwm's grabkeys
-unsafe fn register_grabkeys(state: &mut GmuxState) {
-    // Build the key list (same one used elsewhere)
-    let keys = grabkeys(state);
-
-    // Prepare modifier combinations (with and without NumLock/CapsLock)
-    let modifiers: [u32; 4] = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
-
-    // Clear previous grabs
-    xlib::XUngrabKey(state.xwrapper.dpy(), xlib::AnyKey, xlib::AnyModifier, state.root.0);
-
-    // Register all keys
-    for key in keys {
-        let code = xlib::XKeysymToKeycode(state.xwrapper.dpy(), key.keysym as u64);
-        if code == 0 {
-            continue;
-        }
-        for m in modifiers.iter() {
-            xlib::XGrabKey(
-                state.xwrapper.dpy(),
-                code as c_int,
-                key.mask | *m,
-                state.root.0,
-                1,
-                xlib::GrabModeAsync,
-                xlib::GrabModeAsync,
-            );
-        }
     }
 }
 

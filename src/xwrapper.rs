@@ -20,6 +20,11 @@ impl Default for Window {
     }
 }
 
+pub struct KeySpec {
+    pub mask: u32,
+    pub keysym: u32,
+}
+
 pub struct XWrapper {
     dpy: *mut xlib::Display,
 }
@@ -73,6 +78,38 @@ impl XWrapper {
     
     pub fn display_height(&self, screen_num: i32) -> i32 {
         unsafe { xlib::XDisplayHeight(self.dpy, screen_num) }
+    }
+
+    pub fn create_window(
+        &self,
+        parent: Window,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        border_width: u32,
+        depth: i32,
+        class: u32,
+        visual: *mut xlib::Visual,
+        valuemask: u64,
+        attributes: &mut xlib::XSetWindowAttributes,
+    ) -> Window {
+        unsafe {
+            Window(xlib::XCreateWindow(
+                self.dpy,
+                parent.0,
+                x,
+                y,
+                width,
+                height,
+                border_width,
+                depth,
+                class,
+                visual,
+                valuemask,
+                attributes,
+            ))
+        }
     }
 
     pub fn create_simple_window(
@@ -161,6 +198,245 @@ impl XWrapper {
     pub fn select_input(&self, win: Window, mask: i64) {
         unsafe {
             xlib::XSelectInput(self.dpy, win.0, mask);
+        }
+    }
+
+    pub fn allow_events(&self, mode: i32) {
+        unsafe {
+            xlib::XAllowEvents(self.dpy, mode, xlib::CurrentTime);
+        }
+    }
+
+    pub fn ungrab_key(&self, win: Window) {
+        unsafe {
+            xlib::XUngrabKey(self.dpy, xlib::AnyKey, xlib::AnyModifier, win.0);
+        }
+    }
+
+    pub fn select_input_for_substructure_redirect(&self, win: Window) {
+        unsafe {
+            xlib::XSelectInput(
+                self.dpy,
+                win.0,
+                xlib::SubstructureRedirectMask,
+            );
+        }
+    }
+
+    pub fn get_window_attributes(&self, win: Window) -> Result<xlib::XWindowAttributes, ()> {
+        unsafe {
+            let mut wa: xlib::XWindowAttributes = std::mem::zeroed();
+            if xlib::XGetWindowAttributes(self.dpy, win.0, &mut wa) != 0 {
+                Ok(wa)
+            } else {
+                Err(())
+            }
+        }
+    }
+
+    pub fn get_transient_for_hint(&self, win: Window) -> Option<Window> {
+        unsafe {
+            let mut transient_win: xlib::Window = 0;
+            if xlib::XGetTransientForHint(self.dpy, win.0, &mut transient_win) != 0 {
+                Some(Window(transient_win))
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn query_tree(&self, win: Window) -> Result<(Window, Window, Vec<Window>), ()> {
+        unsafe {
+            let mut root_return: xlib::Window = 0;
+            let mut parent_return: xlib::Window = 0;
+            let mut children: *mut xlib::Window = std::ptr::null_mut();
+            let mut nchildren: u32 = 0;
+            if xlib::XQueryTree(
+                self.dpy,
+                win.0,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut nchildren,
+            ) != 0
+            {
+                let children_vec = if nchildren > 0 {
+                    std::slice::from_raw_parts(children, nchildren as usize)
+                        .iter()
+                        .map(|&w| Window(w))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if !children.is_null() {
+                    xlib::XFree(children as *mut _);
+                }
+                Ok((
+                    Window(root_return),
+                    Window(parent_return),
+                    children_vec,
+                ))
+            } else {
+                Err(())
+            }
+        }
+    }
+
+    pub fn map_window(&self, win: Window) {
+        unsafe { xlib::XMapWindow(self.dpy, win.0) };
+    }
+
+    pub fn raise_window(&self, win: Window) {
+        unsafe { xlib::XRaiseWindow(self.dpy, win.0) };
+    }
+
+    pub fn keycode_to_keysym(&self, keycode: u32) -> u64 {
+        unsafe { xlib::XKeycodeToKeysym(self.dpy, keycode as u8, 0) }
+    }
+
+    pub fn set_input_focus(&self, win: Window, revert_to: i32) {
+        unsafe {
+            xlib::XSetInputFocus(self.dpy, win.0, revert_to, xlib::CurrentTime);
+        }
+    }
+
+    pub fn move_window(&self, win: Window, x: i32, y: i32) {
+        unsafe {
+            xlib::XMoveWindow(self.dpy, win.0, x, y);
+        }
+    }
+
+    pub fn configure_window(
+        &self,
+        win: Window,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        border_width: i32,
+    ) {
+        unsafe {
+            let mut wc: xlib::XWindowChanges = std::mem::zeroed();
+            wc.x = x;
+            wc.y = y;
+            wc.width = w;
+            wc.height = h;
+            wc.border_width = border_width;
+            let mask = xlib::CWX | xlib::CWY | xlib::CWWidth | xlib::CWHeight | xlib::CWBorderWidth;
+            xlib::XConfigureWindow(self.dpy, win.0, mask as u32, &mut wc);
+        }
+    }
+
+    pub fn grab_keys(&self, win: Window, numlockmask: u32, keys: &[KeySpec]) {
+        unsafe {
+            xlib::XUngrabKey(self.dpy, xlib::AnyKey, xlib::AnyModifier, win.0);
+
+            let modifiers: [u32; 4] = [0, xlib::LockMask, numlockmask, numlockmask | xlib::LockMask];
+
+            for key in keys {
+                let code = xlib::XKeysymToKeycode(self.dpy, key.keysym as u64);
+                if code == 0 {
+                    continue;
+                }
+                for &m in &modifiers {
+                    xlib::XGrabKey(
+                        self.dpy,
+                        code as c_int,
+                        key.mask | m,
+                        win.0,
+                        1,
+                        xlib::GrabModeAsync,
+                        xlib::GrabModeAsync,
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn ungrab_keys(&self, win: Window) {
+        unsafe {
+            xlib::XUngrabKey(self.dpy, xlib::AnyKey, xlib::AnyModifier, win.0);
+        }
+    }
+
+    pub fn unmanage_window(&self, win: Window) {
+        unsafe {
+            xlib::XUngrabButton(
+                self.dpy,
+                xlib::AnyButton as u32,
+                xlib::AnyModifier as u32,
+                win.0,
+            );
+            xlib::XSetWindowBorder(self.dpy, win.0, 0);
+            xlib::XRemoveFromSaveSet(self.dpy, win.0);
+        }
+    }
+
+    pub fn get_wm_protocols(&self, win: Window) -> Vec<xlib::Atom> {
+        unsafe {
+            let mut protocols_ptr: *mut xlib::Atom = std::ptr::null_mut();
+            let mut count = 0;
+            let status = xlib::XGetWMProtocols(self.dpy, win.0, &mut protocols_ptr, &mut count);
+
+            if status != 0 && count > 0 && !protocols_ptr.is_null() {
+                let protocols = std::slice::from_raw_parts(protocols_ptr, count as usize).to_vec();
+                xlib::XFree(protocols_ptr as *mut _);
+                protocols
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn send_client_message(
+        &self,
+        win: Window,
+        message_type: xlib::Atom,
+        data: [i64; 5],
+    ) {
+        unsafe {
+            let mut ev: xlib::XEvent = std::mem::zeroed();
+            ev.client_message.type_ = xlib::ClientMessage;
+            ev.client_message.window = win.0;
+            ev.client_message.message_type = message_type;
+            ev.client_message.format = 32;
+            ev.client_message.data.set_long(0, data[0]);
+            ev.client_message.data.set_long(1, data[1]);
+            ev.client_message.data.set_long(2, data[2]);
+            ev.client_message.data.set_long(3, data[3]);
+            ev.client_message.data.set_long(4, data[4]);
+            xlib::XSendEvent(self.dpy, win.0, 0, xlib::NoEventMask, &mut ev);
+        }
+    }
+
+    pub fn grab_server(&self) {
+        unsafe { xlib::XGrabServer(self.dpy) };
+    }
+
+    pub fn ungrab_server(&self) {
+        unsafe { xlib::XUngrabServer(self.dpy) };
+    }
+
+    pub fn set_close_down_mode(&self, mode: i32) {
+        unsafe { xlib::XSetCloseDownMode(self.dpy, mode) };
+    }
+
+    pub fn kill_client(&self, win: Window) {
+        unsafe { xlib::XKillClient(self.dpy, win.0) };
+    }
+
+    pub fn sync(&self, discard: bool) {
+        unsafe { xlib::XSync(self.dpy, if discard { 1 } else { 0 }) };
+    }
+
+    pub fn next_event(&self) -> Option<xlib::XEvent> {
+        unsafe {
+            let mut ev: xlib::XEvent = std::mem::zeroed();
+            if xlib::XNextEvent(self.dpy, &mut ev) == 0 {
+                Some(ev)
+            } else {
+                None
+            }
         }
     }
 
