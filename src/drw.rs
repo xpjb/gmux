@@ -38,7 +38,7 @@ impl Drop for Fnt {
 
 pub type Clr = xft::XftColor;
 
-#[allow(dead_code)]
+
 #[derive(PartialEq, Copy, Clone)]
 pub enum Scheme {
     Norm,
