@@ -8,10 +8,8 @@ use x11::keysym;
 
 mod xwrapper;
 mod command;
-mod drw;
 use command::*;
-use drw::{Drw, Scheme};
-use xwrapper::{KeySpec, Window, XWrapper};
+use xwrapper::{KeySpec, SchemeId, Window, XWrapper};
 
 // From <X11/Xproto.h>
 const X_SET_INPUT_FOCUS: u8 = 42;
@@ -56,33 +54,32 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     let ltsymbol = mon.ltsymbol;
     let clients = &mon.clients;
     let sel = mon.sel;
+    let scheme_norm = state.schemes[0];
+    let scheme_sel = state.schemes[1];
 
     let mut x = 0;
     let mut w = 0;
     let mut tw = 0;
 
-    unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-    state.drw.rect(0, 0, ww as u32, bh as u32, true, true);
+    state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
 
     if is_selmon {
-        unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
         let status = unsafe { CStr::from_ptr(state.stext.as_ptr()).to_str().unwrap_or("") };
-        tw = state.drw.text(ww as i32 - tw, 0, 0, 0, 0, status, false)
-            + unsafe { state.drw.fonts[0].h as i32 };
+        tw = state.xwrapper.text(scheme_norm, ww as i32 - tw, 0, 0, 0, 0, status, false)
+            + state.xwrapper.get_font_height() as i32;
     }
 
     let mut urg: u32 = 0;
     for c in clients {
         urg |= c.tags;
     }
-    unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-    state.drw.rect(0, 0, ww as u32, bh as u32, true, true);
+    state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
 
     let ltsymbol_str = unsafe { CStr::from_ptr(ltsymbol.as_ptr()).to_str().unwrap_or("") };
     if !ltsymbol_str.is_empty() {
-        w = state.drw.text(0, 0, 0, 0, 0, ltsymbol_str, false);
-        state.drw.rect(x, 0, w as u32, bh as u32, true, true);
-        state.drw.text(x, 0, w as u32, bh as u32, 0, ltsymbol_str, false);
+        w = state.xwrapper.text(scheme_norm, 0, 0, 0, 0, 0, ltsymbol_str, false);
+        state.xwrapper.rect(scheme_norm, x, 0, w as u32, bh as u32, true, true);
+        state.xwrapper.text(scheme_norm, x, 0, w as u32, bh as u32, 0, ltsymbol_str, false);
         x = w;
     }
 
@@ -94,25 +91,22 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
                 break;
             }
         }
-        w = state.drw.text_width(state.tags[i]) as i32;
-        unsafe {
-            let scheme_idx = if mon.tagset[mon.seltags as usize] & 1 << i != 0 {
-                Scheme::Sel
-            } else {
-                Scheme::Norm
-            };
-            state.drw.scheme = *state.scheme.add(scheme_idx as usize);
-        }
-        state.drw.rect(x, 0, w as u32, bh as u32, true, true);
+        w = state.xwrapper.text_width(state.tags[i]) as i32;
+        let scheme = if mon.tagset[mon.seltags as usize] & 1 << i != 0 {
+            scheme_sel
+        } else {
+            scheme_norm
+        };
+        state.xwrapper.rect(scheme, x, 0, w as u32, bh as u32, true, true);
         if urg & (1 << i) != 0 {
-            state.drw.rect(x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, true);
+            state.xwrapper.rect(scheme, x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, true);
         }
-        state.drw.text(x, 0, w as u32, bh as u32, 0, state.tags[i], false);
+        state.xwrapper.text(scheme, x, 0, w as u32, bh as u32, 0, state.tags[i], false);
         unsafe {
             if let Some(s_idx) = mon.sel {
                 let sel_client = &mon.clients[s_idx];
                 if (sel_client.tags & (1 << i)) != 0 {
-                    state.drw.rect(x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, false);
+                    state.xwrapper.rect(scheme_sel, x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, false);
                 }
             }
         }
@@ -124,16 +118,16 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
         if let Some(s_idx) = mon.sel {
             let sel_client = &mon.clients[s_idx];
             let name = CStr::from_ptr(sel_client.name.as_ptr()).to_str().unwrap_or(BROKEN_UTF8);
-            state.drw.text(x, 0, w as u32, bh as u32, 0, name, false);
+            state.xwrapper.text(scheme_sel, x, 0, w as u32, bh as u32, 0, name, false);
             if sel_client.isfloating {
-                state.drw.rect(x + 5, 5, (w - 10) as u32, (bh - 2) as u32, false, false);
+                state.xwrapper.rect(scheme_sel, x + 5, 5, (w - 10) as u32, (bh - 2) as u32, false, false);
             }
         } else {
-            state.drw.rect(x, 0, w as u32, bh as u32, true, true);
+            state.xwrapper.rect(scheme_norm, x, 0, w as u32, bh as u32, true, true);
         }
     }
 
-    state.drw.map(barwin.0, 0, 0, ww as u32, bh as u32);
+    state.xwrapper.map_drawable(barwin, 0, 0, ww as u32, bh as u32);
 }
 
 
@@ -368,10 +362,8 @@ struct GmuxState {
     netatom: [xlib::Atom; Net::Last as usize],
     running: c_int,
     cursor: [*mut xlib::Cursor; Cur::Last as usize],
-    
-    scheme: *mut *mut Clr,
+    schemes: [SchemeId; 2],
     xwrapper: XWrapper,
-    drw: Drw,
     mons: Vec<Monitor>,
     selmon: usize,
     root: Window,
@@ -598,16 +590,15 @@ fn setup(state: &mut GmuxState) {
         state.sw = state.xwrapper.display_width(state.screen);
         state.sh = state.xwrapper.display_height(state.screen);
         state.root = state.xwrapper.root_window(state.screen);
-        state.drw = Drw::create(state.xwrapper.dpy(), state.screen, state.root.0, state.sw as u32, state.sh as u32);
         
         let fonts = &["monospace:size=12"]; // TODO: configurable
-        if !state.drw.fontset_create(fonts) {
+        if !state.xwrapper.fontset_create(fonts) {
             die("no fonts could be loaded.");
         }
 
         // derive bar height and lrpad from font height like dwm
-        if !state.drw.fonts.is_empty() {
-            let h = state.drw.fonts[0].h as i32;
+        let h = state.xwrapper.get_font_height() as i32;
+        if h > 0 {
             state.bh = h + 2;
             state.lrpad = h + 2;
         }
@@ -617,10 +608,8 @@ fn setup(state: &mut GmuxState) {
             &["#bbbbbb", "#222222", "#444444"], // SchemeNorm
             &["#eeeeee", "#005577", "#005577"], // SchemeSel
         ];
-        state.scheme = ecalloc(colors.len(), std::mem::size_of::<*mut Clr>()) as *mut *mut Clr;
-        for i in 0..colors.len() {
-            *state.scheme.add(i) = state.drw.scm_create(colors[i]);
-        }
+        state.schemes[0] = state.xwrapper.scm_create(colors[0]);
+        state.schemes[1] = state.xwrapper.scm_create(colors[1]);
 
         // initialise status text sample
         let sample_status = b"gmux";
@@ -1322,7 +1311,7 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
         let selmon = &state.mons[state.selmon];
 
         for (tag_idx, &tag) in state.tags.iter().enumerate() {
-            let w = state.drw.text_width(tag);
+            let w = state.xwrapper.text_width(tag) as i32;
             x += w as i32;
             if ev.x > x {
                 i = tag_idx + 1;
@@ -1335,7 +1324,7 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
             arg.ui = 1 << i;
         } else if ev.x < x + state.blw {
             _click = Clk::LtSymbol;
-        } else if ev.x > selmon.ww - state.drw.text_width(&unsafe { CStr::from_ptr(&state.stext as *const c_char).to_string_lossy() }) as i32 {
+        } else if ev.x > selmon.ww - state.xwrapper.text_width(&unsafe { CStr::from_ptr(&state.stext as *const c_char).to_string_lossy() }) as i32 {
             _click = Clk::StatusText;
         } else {
             _click = Clk::WinTitle;
@@ -1643,19 +1632,8 @@ fn main() {
         netatom: [0; Net::Last as usize],
         running: 1,
         cursor: [null_mut(); Cur::Last as usize],
-        scheme: null_mut(),
+        schemes: [SchemeId(0), SchemeId(0)],
         xwrapper: XWrapper::connect().expect("Failed to open display"),
-        drw: Drw {
-            w: 0,
-            h: 0,
-            dpy: null_mut(),
-            screen: 0,
-            root: 0,
-            drawable: 0,
-            gc: null_mut(),
-            scheme: null_mut(),
-            fonts: Vec::new(),
-        },
         mons: Vec::new(),
         selmon: 0,
         root: Window(0),
