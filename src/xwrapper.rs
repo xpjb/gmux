@@ -1,10 +1,86 @@
 use std::ffi::CString;
-use std::os::raw::{c_int, c_uint};
+use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 
-use crate::die;
+use crate::{die, X_CONFIGURE_WINDOW, X_COPY_AREA, X_GRAB_BUTTON, X_GRAB_KEY, X_POLY_FILL_RECTANGLE, X_POLY_SEGMENT, X_POLY_TEXT8, X_SET_INPUT_FOCUS};
+
+static mut X_ERROR_OCCURRED: bool = false;
+
+#[allow(unused_variables)]
+unsafe extern "C" fn xerror_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+    // Always return 0 to tell Xlib that the error was handled.
+    0
+}
+
+unsafe extern "C" fn xerror_start(
+    _dpy: *mut xlib::Display,
+    _ee: *mut xlib::XErrorEvent,
+) -> c_int {
+    X_ERROR_OCCURRED = true;
+    0
+}
+
+/// There's no way to check accesses to destroyed windows, thus those cases are
+/// ignored (especially on UnmapNotify's). Other types of errors call Xlibs
+/// default error handler, which may call exit.
+unsafe extern "C" fn xerror(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+    let ee_ref = unsafe { &*ee };
+    if ee_ref.error_code == xlib::BadWindow
+        || (ee_ref.request_code == X_SET_INPUT_FOCUS && ee_ref.error_code == xlib::BadMatch)
+        || (ee_ref.request_code == X_POLY_TEXT8 && ee_ref.error_code == xlib::BadDrawable)
+        || (ee_ref.request_code == X_POLY_FILL_RECTANGLE && ee_ref.error_code == xlib::BadDrawable)
+        || (ee_ref.request_code == X_POLY_SEGMENT && ee_ref.error_code == xlib::BadDrawable)
+        || (ee_ref.request_code == X_CONFIGURE_WINDOW && ee_ref.error_code == xlib::BadMatch)
+        || (ee_ref.request_code == X_GRAB_BUTTON && ee_ref.error_code == xlib::BadAccess)
+        || (ee_ref.request_code == X_GRAB_KEY && ee_ref.error_code == xlib::BadAccess)
+        || (ee_ref.request_code == X_COPY_AREA && ee_ref.error_code == xlib::BadDrawable)
+    {
+        return 0;
+    }
+
+    eprintln!(
+        "gmux: fatal error: request code={}, error code={}",
+        ee_ref.request_code, ee_ref.error_code
+    );
+
+    // Call the default error handler which will exit
+    // This is not a direct equivalent, but it's the safest thing to do
+    // without the original xerrorxlib variable.
+    // In a more robust implementation, we might get the default handler and call it.
+    // For now, exiting is the clearest action.
+    die("fatal X error");
+    0 // Unreachable
+}
+
 use fontconfig::{self};
+
+#[derive(PartialEq, Copy, Clone)]
+pub enum Net {
+    Supported,
+    WMName,
+    WMState,
+    WMCheck,
+    WMFullscreen,
+    ActiveWindow,
+    WMWindowType,
+    WMWindowTypeDialog,
+    ClientList,
+    Last,
+}
+#[derive(PartialEq, Copy, Clone)]
+pub enum WM {
+    Protocols,
+    Delete,
+    State,
+    TakeFocus,
+    Last,
+}
+
+pub enum Atom {
+    Net(Net),
+    Wm(WM),
+}
 
 struct Drw {
     pub w: c_uint,
@@ -272,6 +348,7 @@ pub struct XWrapper {
     dpy: *mut xlib::Display,
     drw: Drw,
     schemes: Vec<*mut Clr>,
+    pub atoms: Atoms,
 }
 
 impl XWrapper {
@@ -288,10 +365,12 @@ impl XWrapper {
                 let w = unsafe { xlib::XDisplayWidth(dpy, screen) as u32 };
                 let h = unsafe { xlib::XDisplayHeight(dpy, screen) as u32 };
                 let drw = Drw::create(dpy, screen, root, w, h);
+                let atoms = Atoms::new(dpy)?;
                 Ok(Self {
                     dpy,
                     drw,
                     schemes: Vec::new(),
+                    atoms,
                 })
             }
         }
@@ -772,6 +851,77 @@ impl XWrapper {
             numlockmask as u32
         }
     }
+
+    pub fn query_pointer_position(&self) -> Option<(i32, i32)> {
+        unsafe {
+            let mut root_return = 0;
+            let mut child_return = 0;
+            let mut root_x_return = 0;
+            let mut root_y_return = 0;
+            let mut win_x_return = 0;
+            let mut win_y_return = 0;
+            let mut mask_return = 0;
+
+            let screen = self.default_screen();
+            let root = self.root_window(screen);
+
+            let result = xlib::XQueryPointer(
+                self.dpy,
+                root.0,
+                &mut root_return,
+                &mut child_return,
+                &mut root_x_return,
+                &mut root_y_return,
+                &mut win_x_return,
+                &mut win_y_return,
+                &mut mask_return,
+            );
+
+            if result != 0 {
+                Some((root_x_return, root_y_return))
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn check_for_other_wm(&mut self) -> Result<(), &str> {
+        unsafe {
+            X_ERROR_OCCURRED = false;
+            self.set_error_handler(Some(xerror_start));
+            let root = self.root_window(self.default_screen());
+            self.select_input_for_substructure_redirect(root);
+            self.sync(false);
+
+            if X_ERROR_OCCURRED {
+                return Err("another window manager is already running");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_default_error_handler(&self) {
+        self.set_error_handler(Some(xerror));
+    }
+
+    pub fn set_ignore_error_handler(&self) {
+        self.set_error_handler(Some(xerror_ignore));
+    }
+
+    pub fn stack_windows(&self, windows: &[Window]) {
+        unsafe {
+            let mut wc: xlib::XWindowChanges = std::mem::zeroed();
+            wc.stack_mode = xlib::Above as i32;
+            let changes = xlib::CWStackMode | xlib::CWSibling;
+            
+            for (i, win) in windows.iter().enumerate() {
+                if i > 0 {
+                    wc.sibling = windows[i - 1].0;
+                }
+                xlib::XConfigureWindow(self.dpy, win.0, (changes) as u32, &mut wc);
+            }
+        }
+    }
 }
 
 impl Drop for XWrapper {
@@ -786,4 +936,51 @@ impl Drop for XWrapper {
 pub enum XError {
     DisplayOpen,
     AtomIntern(String),
+}
+
+pub struct Atoms {
+    wmatom: [xlib::Atom; WM::Last as usize],
+    netatom: [xlib::Atom; Net::Last as usize],
+}
+
+impl Atoms {
+    pub fn new(dpy: *mut xlib::Display) -> Result<Self, XError> {
+        let mut atoms = Self {
+            wmatom: [0; WM::Last as usize],
+            netatom: [0; Net::Last as usize],
+        };
+
+        let intern = |name: &str| -> Result<xlib::Atom, XError> {
+            let c_str = CString::new(name)
+                .map_err(|_| XError::AtomIntern(name.to_string()))?;
+            unsafe { Ok(xlib::XInternAtom(dpy, c_str.as_ptr(), 0)) }
+        };
+
+        atoms.wmatom[WM::Protocols as usize] = intern("WM_PROTOCOLS")?;
+        atoms.wmatom[WM::Delete as usize] = intern("WM_DELETE_WINDOW")?;
+        atoms.wmatom[WM::State as usize] = intern("WM_STATE")?;
+        atoms.wmatom[WM::TakeFocus as usize] = intern("WM_TAKE_FOCUS")?;
+        atoms.netatom[Net::ActiveWindow as usize] = intern("_NET_ACTIVE_WINDOW")?;
+        atoms.netatom[Net::Supported as usize] = intern("_NET_SUPPORTED")?;
+        atoms.netatom[Net::WMName as usize] = intern("_NET_WM_NAME")?;
+        atoms.netatom[Net::WMState as usize] = intern("_NET_WM_STATE")?;
+        atoms.netatom[Net::WMCheck as usize] = intern("_NET_SUPPORTING_WM_CHECK")?;
+        atoms.netatom[Net::WMFullscreen as usize] = intern("_NET_WM_STATE_FULLSCREEN")?;
+        atoms.netatom[Net::WMWindowType as usize] = intern("_NET_WM_WINDOW_TYPE")?;
+        atoms.netatom[Net::WMWindowTypeDialog as usize] = intern("_NET_WM_WINDOW_TYPE_DIALOG")?;
+        atoms.netatom[Net::ClientList as usize] = intern("_NET_CLIENT_LIST")?;
+
+        Ok(atoms)
+    }
+
+    pub fn get(&self, atom: Atom) -> xlib::Atom {
+        match atom {
+            Atom::Net(net_atom) => self.netatom[net_atom as usize],
+            Atom::Wm(wm_atom) => self.wmatom[wm_atom as usize],
+        }
+    }
+    
+    pub fn netatom_ptr(&self) -> *const xlib::Atom {
+        self.netatom.as_ptr()
+    }
 }
