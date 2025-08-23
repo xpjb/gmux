@@ -1,4 +1,4 @@
-
+#![allow(warnings)]
 use std::ffi::{CString, CStr};
 use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::ptr::{null_mut};
@@ -22,7 +22,7 @@ const X_GRAB_KEY: u8 = 33;
 const X_COPY_AREA: u8 = 62;
 
 // Simple X11 error handler that ignores non-fatal errors like BadWindow so gmux
-// doesn’t exit (mirrors dwm’s default behaviour).
+// doesn't exit (mirrors dwm's default behaviour).
 #[allow(unused_variables)]
 unsafe extern "C" fn xerror_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
     // Always return 0 to tell Xlib that the error was handled.
@@ -32,6 +32,7 @@ unsafe extern "C" fn xerror_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErro
 /* ========= configurable constants (similar to dwm's config.h) ========= */
 const FONT: &str = "monospace:size=24"; // change size here to scale bar text
 const BORDERPX: i32 = 2;
+const BROKEN_UTF8: &str = "";
 // ======================================================================
 
 fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
@@ -44,52 +45,95 @@ fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
     }
 }
 
-fn drawbar(state: &mut GmuxState, m: *mut Monitor) {
-    let monitor = unsafe { &mut *m };
+fn drawbar(state: &mut GmuxState, mon_idx: usize) {
+    let is_selmon = state.selmon == mon_idx;
+    let mon = &state.mons[mon_idx];
+    let ww = mon.ww;
+    let bh = state.bh;
+    let barwin = mon.barwin;
+    let ltsymbol = mon.ltsymbol;
+    let clients = mon.clients.clone();
+    let sel = mon.sel;
 
-    // variables similar to dwm
     let mut x = 0;
+    let mut w = 0;
     let mut tw = 0;
 
-    // base bar background
     unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-    // filled, invert=true so rectangle uses ColBg, matching dwm background
-    state.drw.rect(0, 0, monitor.ww as u32, state.bh as u32, true, true);
+    state.drw.rect(0, 0, ww as u32, bh as u32, true, true);
 
-    // draw status text on selected monitor first so tags can overdraw if needed
-    if m == state.selmon {
+    if is_selmon {
         unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-        let status = unsafe {
-            CStr::from_ptr(state.stext.as_ptr()).to_str().unwrap_or("")
-        };
-        tw = state.drw.text_width(status) + 2; // 2px right padding
-        state.drw.text(monitor.ww - tw as i32, 0, tw, state.bh as u32, 0, status, false);
+        let status = unsafe { CStr::from_ptr(state.stext.as_ptr()).to_str().unwrap_or("") };
+        tw = state.drw.text(ww as i32 - tw, 0, 0, 0, 0, status, false)
+            + unsafe { state.drw.fonts[0].h as i32 };
     }
 
-    // tags
-    for i in 0..TAGS.len() {
-        let sel = (monitor.tagset[monitor.seltags as usize] & 1 << i) != 0;
-        unsafe { state.drw.scheme = *state.scheme.add(if sel { Scheme::Sel } else { Scheme::Norm } as usize) };
-        let w = state.drw.text_width(TAGS[i]) + state.lrpad as u32;
-        state.drw.text(x, 0, w, state.bh as u32, (state.lrpad / 2) as u32, TAGS[i], false);
-        x += w as i32;
+    let mut urg: u32 = 0;
+    for c_ptr in &clients {
+        let c = unsafe { &**c_ptr };
+        urg |= c.tags;
     }
-
-    // layout symbol
-    let ltsymbol = unsafe { CStr::from_ptr(monitor.ltsymbol.as_ptr()).to_str().unwrap_or("") };
     unsafe { state.drw.scheme = *state.scheme.add(Scheme::Norm as usize) };
-    let w = state.drw.text_width(ltsymbol) + state.lrpad as u32;
-    state.drw.text(x, 0, w, state.bh as u32, (state.lrpad / 2) as u32, ltsymbol, false);
+    state.drw.rect(0, 0, ww as u32, bh as u32, true, true);
 
-    // map final pixmap
-    state.drw.map(monitor.barwin, 0, 0, monitor.ww as u32, state.bh as u32);
+    let ltsymbol_str = unsafe { CStr::from_ptr(ltsymbol.as_ptr()).to_str().unwrap_or("") };
+    if !ltsymbol_str.is_empty() {
+        w = state.drw.text(0, 0, 0, 0, 0, ltsymbol_str, false);
+        state.drw.rect(x, 0, w as u32, bh as u32, true, true);
+        state.drw.text(x, 0, w as u32, bh as u32, 0, ltsymbol_str, false);
+        x = w;
+    }
+
+    for i in 0..state.tags.len() {
+        let mut occupied = false;
+        for c_ptr in &clients {
+            let c = unsafe { &**c_ptr };
+            if (c.tags & (1 << i)) != 0 {
+                occupied = true;
+                break;
+            }
+        }
+        w = state.drw.text(0, 0, 0, 0, 0, state.tags[i], false);
+        unsafe {
+            let scheme_idx = if occupied { Scheme::Norm } else { Scheme::Urg };
+            state.drw.scheme = *state.scheme.add(scheme_idx as usize);
+        }
+        state.drw.rect(x, 0, w as u32, bh as u32, true, true);
+        if urg & (1 << i) != 0 {
+            state.drw.rect(x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, true);
+        }
+        state.drw.text(x, 0, w as u32, bh as u32, 0, state.tags[i], false);
+        unsafe {
+            if let Some(s) = sel {
+                if ((*s).tags & (1 << i)) != 0 {
+                    state.drw.rect(x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, false);
+                }
+            }
+        }
+        x += w;
+    }
+
+    w = ww - tw;
+    unsafe {
+        if let Some(s) = sel {
+            let name = CStr::from_ptr((*s).name.as_ptr()).to_str().unwrap_or(BROKEN_UTF8);
+            state.drw.text(x, 0, w as u32, bh as u32, 0, name, false);
+            if (*s).isfloating {
+                state.drw.rect(x + 5, 5, (w - 10) as u32, (bh - 10) as u32, false, false);
+            }
+        } else {
+            state.drw.rect(x, 0, w as u32, bh as u32, true, true);
+        }
+    }
+
+    state.drw.map(barwin, 0, 0, ww as u32, bh as u32);
 }
 
+#[allow(dead_code)]
 fn drawbars(state: &mut GmuxState) {
-    let mut m = state.mons;
-    while !m.is_null() {
-        drawbar(state, m);
-        m = unsafe { (*m).next };
+    for i in 0..state.mons.len() {
+        drawbar(state, i);
     }
 }
 
@@ -186,7 +230,7 @@ struct Button {
     arg: Arg,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 struct Monitor {
     ltsymbol: [c_char; 16],
     mfact: f32,
@@ -214,10 +258,9 @@ struct Monitor {
     showbar: bool,
     #[allow(dead_code)]
     topbar: bool,
-    clients: *mut Client,
-    sel: *mut Client,
-    stack: *mut Client,
-    next: *mut Monitor,
+    clients: Vec<*mut Client>,
+    sel: Option<*mut Client>,
+    stack: Vec<*mut Client>,
     barwin: xlib::Window,
     lt: [*const Layout; 2],
 }
@@ -270,7 +313,7 @@ struct Client {
     isfullscreen: bool,
     next: *mut Client,
     snext: *mut Client,
-    mon: *mut Monitor,
+    mon_idx: usize,
     win: xlib::Window,
 }
 
@@ -285,7 +328,7 @@ struct Key {
 #[allow(dead_code)]
 struct Layout {
     symbol: SyncPtr,
-    arrange: unsafe extern "C" fn(&mut GmuxState, *mut Monitor),
+    arrange: Option<unsafe extern "C" fn(&mut GmuxState, usize)>,
 }
 
 #[allow(dead_code)]
@@ -323,11 +366,133 @@ struct GmuxState {
     scheme: *mut *mut Clr,
     dpy: *mut xlib::Display,
     drw: Drw,
-    mons: *mut Monitor,
-    selmon: *mut Monitor,
+    mons: Vec<Monitor>,
+    selmon: usize,
     root: xlib::Window,
     wmcheckwin: xlib::Window,
     xerror: bool,
+    tags: [&'static str; 9],
+}
+
+impl GmuxState {
+    #[allow(dead_code)]
+    unsafe fn wintomon(&mut self, w: xlib::Window) -> usize {
+        let mut x = 0;
+        let mut y = 0;
+        if w == self.root {
+            unsafe {
+                if getrootptr(self, &mut x, &mut y) {
+                    return self.recttomon(x, y, 1, 1);
+                }
+            }
+        }
+        for (i, m) in self.mons.iter().enumerate() {
+            if w == m.barwin {
+                return i;
+            }
+        }
+        let c = unsafe { wintoclient(self, w) };
+        if !c.is_null() {
+            return unsafe { (*c).mon_idx };
+        }
+        self.selmon
+    }
+
+    #[allow(dead_code)]
+    fn recttomon(&self, x: i32, y: i32, w: i32, h: i32) -> usize {
+        let mut r = self.selmon;
+        let mut area = 0;
+        for (i, m) in self.mons.iter().enumerate() {
+            let a = intersect(x, y, w, h, m);
+            if a > area {
+                area = a;
+                r = i;
+            }
+        }
+        r
+    }
+
+    #[allow(dead_code)]
+    unsafe fn arrange(&mut self, mon_idx: Option<usize>) {
+        if let Some(idx) = mon_idx {
+            if let Some(mon) = self.mons.get_mut(idx) {
+                let stack = mon.stack.clone();
+                show_hide(self, &stack);
+                unsafe {
+                    self.arrange_mon(idx);
+                    self.restack(idx);
+                }
+            }
+        } else {
+            for i in 0..self.mons.len() {
+                let stack = self.mons[i].stack.clone();
+                show_hide(self, &stack);
+                unsafe { self.arrange_mon(i) };
+            }
+            for i in 0..self.mons.len() {
+                unsafe { self.restack(i) };
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    unsafe fn arrange_mon(&mut self, mon_idx: usize) {
+        if let Some(mon) = self.mons.get(mon_idx) {
+            if let Some(layout) = mon.lt.get(mon.sellt as usize) {
+                if let Some(arrange_fn) = unsafe { (**layout).arrange } {
+                    unsafe { arrange_fn(self, mon_idx) };
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    unsafe fn restack(&mut self, mon_idx: usize) {
+        let dpy = self.dpy;
+        drawbar(self, mon_idx);
+
+        if let Some(m) = self.mons.get_mut(mon_idx) {
+            if m.sel.is_none() {
+                return;
+            }
+            let sel = m.sel.unwrap();
+            if unsafe { (*sel).isfloating } || m.lt.get(m.sellt as usize).is_none() {
+                unsafe { xlib::XRaiseWindow(dpy, (*sel).win) };
+            }
+            if m.lt.get(m.sellt as usize).is_some() {
+                let mut wc: xlib::XWindowChanges = unsafe { std::mem::zeroed() };
+                wc.stack_mode = xlib::Below as i32;
+                wc.sibling = m.barwin;
+                let m_stack = m.stack.clone();
+                for c_ptr in &m_stack {
+                    let c = unsafe { &**c_ptr };
+                    if !c.isfloating && is_visible(c, m) {
+                        let win = c.win;
+                        let cf = xlib::CWStackMode | xlib::CWSibling;
+                        unsafe {
+                            xlib::XConfigureWindow(dpy, win, cf as u32, &mut wc);
+                        }
+                    }
+                }
+            }
+            let mut wc: xlib::XWindowChanges = unsafe { std::mem::zeroed() };
+            let sel_win = unsafe { (*sel).win };
+            wc.sibling = sel_win;
+            wc.stack_mode = xlib::Above as i32;
+            let cf = xlib::CWStackMode | xlib::CWSibling;
+
+            let m_stack = m.stack.clone();
+            for c_ptr in m_stack.iter().rev() {
+                let c = unsafe { &mut **c_ptr };
+                if c.isfloating {
+                    let win = c.win;
+                    unsafe {
+                        xlib::XConfigureWindow(dpy, win, cf as u32, &mut wc);
+                    }
+                }
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn xerror_start(
@@ -342,7 +507,7 @@ unsafe extern "C" fn xerror_start(
 /// There's no way to check accesses to destroyed windows, thus those cases are
 /// ignored (especially on UnmapNotify's). Other types of errors call Xlibs
 /// default error handler, which may call exit.
-unsafe extern "C" fn xerror(_state: &mut GmuxState, _dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+unsafe extern "C" fn xerror(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
     let ee_ref = unsafe { &*ee };
     if ee_ref.error_code == xlib::BadWindow
         || (ee_ref.request_code == X_SET_INPUT_FOCUS && ee_ref.error_code == xlib::BadMatch)
@@ -387,7 +552,7 @@ fn checkotherwm(state: &mut GmuxState) {
 
     unsafe extern "C" fn xerror_handler(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> i32 {
         let state = unsafe { &mut *(dpy as *mut GmuxState) };
-        unsafe { xerror(state, dpy, ee) }
+        unsafe { xerror(dpy, ee) }
     }
 
     unsafe {
@@ -479,43 +644,41 @@ fn setup(state: &mut GmuxState) {
         state.netatom[Net::ClientList as usize] = xlib::XInternAtom(state.dpy, net_client_list_name.as_ptr(), 0);
 
         // Create a monitor
-        let mon = ecalloc(1, std::mem::size_of::<Monitor>()) as *mut Monitor;
-        let monitor = &mut *mon;
-        monitor.tagset = [1, 1];
-        monitor.mfact = 0.55;
-        monitor.nmaster = 1;
-        monitor.showbar = true;
-        monitor.topbar = true;
+        let mut mon = Monitor::default();
+        mon.tagset = [1, 1];
+        mon.mfact = 0.55;
+        mon.nmaster = 1;
+        mon.showbar = true;
+        mon.topbar = true;
         // Calculate window area accounting for the bar height
-        if monitor.showbar {
-            monitor.by = if monitor.topbar { 0 } else { state.sh - state.bh };
-            monitor.wy = if monitor.topbar { state.bh } else { 0 };
-            monitor.wh = state.sh - state.bh;
+        if mon.showbar {
+            mon.by = if mon.topbar { 0 } else { state.sh - state.bh };
+            mon.wy = if mon.topbar { state.bh } else { 0 };
+            mon.wh = state.sh - state.bh;
         } else {
-            monitor.by = -state.bh;
-            monitor.wy = 0;
-            monitor.wh = state.sh;
+            mon.by = -state.bh;
+            mon.wy = 0;
+            mon.wh = state.sh;
         }
-        monitor.lt[0] = &LAYOUTS[0];
-        monitor.lt[1] = &LAYOUTS[1];
-        monitor.ltsymbol = [0; 16];
+        mon.lt[0] = &LAYOUTS[0];
+        mon.lt[1] = &LAYOUTS[1];
         let symbol = CStr::from_ptr(LAYOUTS[0].symbol.0).to_str().unwrap();
         let c_symbol = CString::new(symbol).unwrap();
-        let dest = monitor.ltsymbol.as_mut_ptr();
+        let dest = mon.ltsymbol.as_mut_ptr();
         let src = c_symbol.as_ptr();
         std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
-        monitor.wx = 0;
-        monitor.ww = state.sw;
+        mon.wx = 0;
+        mon.ww = state.sw;
         let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
         wa.override_redirect = 1;
         wa.background_pixmap = xlib::ParentRelative as u64;
         wa.event_mask = xlib::ButtonPressMask | xlib::ExposureMask;
-        monitor.barwin = xlib::XCreateWindow(
+        mon.barwin = xlib::XCreateWindow(
             state.dpy,
             state.root,
-            monitor.wx,
-            monitor.by,
-            monitor.ww as u32,
+            mon.wx,
+            mon.by,
+            mon.ww as u32,
             state.bh as u32,
             0,
             xlib::XDefaultDepth(state.dpy, state.screen),
@@ -524,9 +687,9 @@ fn setup(state: &mut GmuxState) {
             (xlib::CWOverrideRedirect | xlib::CWBackPixmap | xlib::CWEventMask) as u64,
             &mut wa,
         );
-        xlib::XMapRaised(state.dpy, monitor.barwin);
-        state.mons = mon;
-        state.selmon = mon;
+        xlib::XMapRaised(state.dpy, mon.barwin);
+        state.mons.push(mon);
+        state.selmon = state.mons.len() - 1;
 
         state.cursor[Cur::Normal as usize] = drw_cur_create(state, 68); 
         state.cursor[Cur::Resize as usize] = drw_cur_create(state, 120);
@@ -643,110 +806,104 @@ unsafe extern "C" fn spawn(_state: &mut GmuxState, arg: &Arg) {
 unsafe extern "C" fn togglebar(_state: &mut GmuxState, _arg: &Arg) {}
 #[allow(dead_code)]
 unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
-    let selmon = &mut *state.selmon;
-    if selmon.sel.is_null() {
+    let selmon_idx = state.selmon;
+    let selmon = &mut state.mons[selmon_idx];
+    if selmon.sel.is_none() {
         return;
     }
+    let sel = selmon.sel.unwrap();
     let mut c: *mut Client = std::ptr::null_mut();
-    if arg.i > 0 {
-        // forward direction
-        c = (*selmon.sel).next;
-        while !c.is_null() && !is_visible(&*c) {
-            c = (*c).next;
-        }
-        if c.is_null() {
-            // wrap around
-            c = selmon.clients;
-            while !c.is_null() && !is_visible(&*c) {
-                c = (*c).next;
-            }
+
+    let clients: Vec<*mut Client> = selmon.clients.iter().filter(|c| is_visible(&***c, selmon)).map(|c| *c).collect();
+    if clients.is_empty() {
+        return;
+    }
+
+    if let Some(idx) = clients.iter().position(|&x| x == sel) {
+        if arg.i > 0 {
+            c = clients[(idx + 1) % clients.len()];
+        } else {
+            c = clients[(idx + clients.len() - 1) % clients.len()];
         }
     } else {
-        // backward direction – we need previous visible client
-        let mut i_ptr = selmon.clients;
-        while i_ptr != selmon.sel {
-            if is_visible(&*i_ptr) {
-                c = i_ptr;
-            }
-            i_ptr = (*i_ptr).next;
-        }
-        if c.is_null() {
-            // none before sel, iterate from sel onwards to end
-            while !i_ptr.is_null() {
-                if is_visible(&*i_ptr) {
-                    c = i_ptr;
-                }
-                i_ptr = (*i_ptr).next;
-            }
-        }
+        c = clients[0];
     }
+    
     if !c.is_null() {
         focus(state, c);
-        restack(state, state.selmon);
+        state.restack(selmon_idx);
     }
 }
 #[allow(dead_code)]
 unsafe extern "C" fn incnmaster(state: &mut GmuxState, arg: &Arg) {
-    let selmon = unsafe { &mut *state.selmon };
-    selmon.nmaster = std::cmp::max(selmon.nmaster + unsafe { arg.i }, 0);
-    unsafe { arrange(state, state.selmon) };
+    let selmon_idx = state.selmon;
+    let selmon = &mut state.mons[selmon_idx];
+    selmon.nmaster = std::cmp::max(selmon.nmaster + arg.i, 0);
+    state.arrange(Some(selmon_idx));
 }
 #[allow(dead_code)]
 unsafe extern "C" fn setmfact(state: &mut GmuxState, arg: &Arg) {
-    let selmon = unsafe { &mut *state.selmon };
-    if (unsafe { &*selmon.lt[selmon.sellt as usize] }.arrange as usize) == 0 {
+    let selmon_idx = state.selmon;
+    let selmon = &mut state.mons[selmon_idx];
+    if selmon.lt.get(selmon.sellt as usize).is_none() {
         return;
     }
-    let f = unsafe {
-        if arg.f < 1.0 {
-            arg.f + selmon.mfact
-        } else {
-            arg.f - 1.0
-        }
+    let f = if arg.f < 1.0 {
+        arg.f + selmon.mfact
+    } else {
+        arg.f - 1.0
     };
     if f < 0.05 || f > 0.95 {
         return;
     }
     selmon.mfact = f;
-    unsafe { arrange(state, state.selmon) };
+    state.arrange(Some(selmon_idx));
 }
 #[allow(dead_code)]
 unsafe extern "C" fn zoom(state: &mut GmuxState, _arg: &Arg) {
-    let selmon = unsafe { &mut *state.selmon };
-    let c = selmon.sel;
-    if c.is_null() {
+    let selmon_idx = state.selmon;
+    let c = state.mons[selmon_idx].sel.unwrap();
+    if unsafe { (*(*state.mons[selmon_idx].lt.get_unchecked(state.mons[selmon_idx].sellt as usize))).arrange.is_none() } || unsafe { (*c).isfloating } {
         return;
     }
-    if (unsafe { &*selmon.lt[selmon.sellt as usize] }.arrange as usize) == 0 || unsafe { (*c).isfloating } {
-        return;
-    }
-    if c == unsafe { next_tiled(selmon.clients) } {
-        let next = unsafe { next_tiled((*c).next) };
-        if next.is_null() {
-            return;
+    
+    let tiled_clients: Vec<_> = state.mons[selmon_idx].clients.iter().filter(|cl| unsafe { !(*(**cl)).isfloating && is_visible(&***cl, &state.mons[selmon_idx]) }).collect();
+    if let Some(idx) = tiled_clients.iter().position(|&&x| x == c) {
+        if idx == 0 {
+            if tiled_clients.len() > 1 {
+                pop(state, *tiled_clients[1]);
+            }
+        } else {
+            pop(state, c);
         }
-        unsafe { pop(state, next) };
-    } else {
-        unsafe { pop(state, c) };
     }
 }
 #[allow(dead_code)]
 unsafe extern "C" fn view(_state: &mut GmuxState, _arg: &Arg) {}
 #[allow(dead_code)]
 unsafe extern "C" fn killclient(state: &mut GmuxState, _arg: &Arg) {
-    let selmon = &*state.selmon;
-    if selmon.sel.is_null() {
+    let selmon_idx = state.selmon;
+    let selmon = &state.mons[selmon_idx];
+    if selmon.sel.is_none() {
         return;
     }
-    if !sendevent(state, selmon.sel, state.wmatom[WM::Delete as usize]) {
+    let sel = selmon.sel.unwrap();
+    if !sendevent(state, sel, state.wmatom[WM::Delete as usize]) {
         xlib::XGrabServer(state.dpy);
-        // xlib::XSetErrorHandler(xerrordummy);
-        xlib::XSetCloseDownMode(state.dpy, xlib::DestroyAll);
-        xlib::XKillClient(state.dpy, (*selmon.sel).win);
-        xlib::XSync(state.dpy, 0);
-        // xlib::XSetErrorHandler(xerror);
-        xlib::XUngrabServer(state.dpy);
+        unsafe {
+            xlib::XSetErrorHandler(Some(xerror_dummy));
+            xlib::XSetCloseDownMode(state.dpy, xlib::DestroyAll);
+            xlib::XKillClient(state.dpy, (*sel).win);
+            xlib::XSync(state.dpy, 0);
+            xlib::XSetErrorHandler(Some(xerror));
+            xlib::XUngrabServer(state.dpy);
+        }
     }
+}
+
+#[allow(dead_code)]
+unsafe extern "C" fn xerror_dummy(_dpy: *mut xlib::Display, _ee: *mut xlib::XErrorEvent) -> c_int {
+    0
 }
 
 #[allow(dead_code)]
@@ -781,28 +938,24 @@ unsafe fn sendevent(state: &mut GmuxState, c: *mut Client, proto: xlib::Atom) ->
 #[allow(dead_code)]
 unsafe extern "C" fn setlayout(state: &mut GmuxState, arg: &Arg) {
     let v_ptr = unsafe { arg.v.0 };
+    let selmon_idx = state.selmon;
     if v_ptr.is_null() {
-        let selmon = unsafe { &mut *state.selmon };
-        selmon.sellt ^= 1;
+        state.mons[selmon_idx].sellt ^= 1;
     } else {
-        let selmon = unsafe { &mut *state.selmon };
-        selmon.lt[selmon.sellt as usize] = v_ptr as *const Layout;
+        let sellt = state.mons[selmon_idx].sellt as usize;
+        state.mons[selmon_idx].lt[sellt] = v_ptr as *const Layout;
     }
-
-    let selmon = unsafe { &*state.selmon };
+    let selmon = &mut state.mons[selmon_idx];
     let symbol = unsafe { CStr::from_ptr((*selmon.lt[selmon.sellt as usize]).symbol.0).to_str().unwrap() };
     let c_symbol = CString::new(symbol).unwrap();
-    let dest = unsafe { (*state.selmon).ltsymbol.as_mut_ptr() };
+    let dest = selmon.ltsymbol.as_mut_ptr();
     let src = c_symbol.as_ptr();
     unsafe {
         std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
-        (*state.selmon).ltsymbol[15] = 0;
+        selmon.ltsymbol[15] = 0;
     }
-
-    if !unsafe { (*state.selmon).sel.is_null() } {
-        unsafe { arrange(state, state.selmon) };
-    } else {
-        // drawbar(state.selmon);
+    if selmon.sel.is_some() {
+        state.arrange(Some(selmon_idx));
     }
 }
 #[allow(dead_code)]
@@ -818,204 +971,123 @@ unsafe extern "C" fn quit(state: &mut GmuxState, _arg: &Arg) {
     state.running = 0;
 }
 static LAYOUTS: [Layout; 3] = [
-    Layout { symbol: SyncPtr(b"[]=\0".as_ptr() as *const c_char), arrange: tile },
-    Layout { symbol: SyncPtr(b"><>\0".as_ptr() as *const c_char), arrange: monocle },
-    Layout { symbol: SyncPtr(b"[M]\0".as_ptr() as *const c_char), arrange: monocle },
+    Layout { symbol: SyncPtr(b"[]=\0".as_ptr() as *const c_char), arrange: Some(tile) },
+    Layout { symbol: SyncPtr(b"><>\0".as_ptr() as *const c_char), arrange: Some(monocle) },
+    Layout { symbol: SyncPtr(b"[M]\0".as_ptr() as *const c_char), arrange: Some(monocle) },
 ];
 
 #[allow(dead_code)]
-unsafe extern "C" fn tile(state: &mut GmuxState, m: *mut Monitor) {
-    let mon = unsafe { &mut *m };
-    let mut n = 0;
-    let mut c = unsafe { next_tiled(mon.clients) };
-    while !c.is_null() {
-        n += 1;
-        c = unsafe { next_tiled((*c).next) };
-    }
+unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
+    let mon = &state.mons[mon_idx];
+    let tiled_client_indices: Vec<_> = mon.clients.iter().enumerate()
+        .filter(|(_, c)| unsafe { !(*(**c)).isfloating && is_visible(&*(**c), mon) })
+        .map(|(i, _)| i)
+        .collect();
+    let n = tiled_client_indices.len();
     if n == 0 {
         return;
     }
 
-    let mw = if n > mon.nmaster {
-        if mon.nmaster > 0 {
-            (mon.ww as f32 * mon.mfact) as i32
+    let nmaster = mon.nmaster;
+    let mfact = mon.mfact;
+    let ww = mon.ww;
+    let wh = mon.wh;
+    let wx = mon.wx;
+    let wy = mon.wy;
+
+    let mw = if n > nmaster as usize {
+        if nmaster > 0 {
+            (ww as f32 * mfact) as i32
         } else {
             0
         }
     } else {
-        mon.ww
+        ww
     };
-
-    let mut i = 0;
+    
     let mut my = 0;
     let mut ty = 0;
-    c = unsafe { next_tiled(mon.clients) };
-    while !c.is_null() {
-        let client = unsafe { &mut *c };
-        if i < mon.nmaster {
-            let h = (mon.wh - my) / (std::cmp::min(n, mon.nmaster) - i);
-            unsafe {
-                resize(
-                    state,
-                    client,
-                    mon.wx,
-                    mon.wy + my,
-                    mw - (2 * client.bw),
-                    h - (2 * client.bw),
-                    false,
-                )
-            };
-            if my + client.h < mon.wh {
-                my += client.h;
-            }
-        } else {
-            let h = (mon.wh - ty) / (n - i);
-            unsafe {
-                resize(
-                    state,
-                    client,
-                    mon.wx + mw,
-                    mon.wy + ty,
-                    mon.ww - mw - (2 * client.bw),
-                    h - (2 * client.bw),
-                    false,
-                )
-            };
-            if ty + client.h < mon.wh {
-                ty += client.h;
-            }
-        }
-        i += 1;
-        c = unsafe { next_tiled(client.next) };
-    }
-}
 
-#[allow(dead_code)]
-unsafe extern "C" fn monocle(state: &mut GmuxState, m: *mut Monitor) {
-    let mon = unsafe { &mut *m };
-    let mut n = 0;
-    let mut c = unsafe { next_tiled(mon.clients) };
-    while !c.is_null() {
-        n += 1;
-        c = unsafe { next_tiled((&*c).next) };
-    }
-
-    if n > 0 {
-        let symbol = format!("[{}]", n);
-        let c_symbol = CString::new(symbol).unwrap();
-        unsafe {
-            let dest = mon.ltsymbol.as_mut_ptr();
-            let src = c_symbol.as_ptr();
-            std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
-            mon.ltsymbol[15] = 0;
-        }
-    }
-
-    c = unsafe { next_tiled(mon.clients) };
-    while !c.is_null() {
-        let client = unsafe { &mut *c };
-        unsafe {
+    for (i, &client_idx) in tiled_client_indices.iter().enumerate() {
+        let c = state.mons[mon_idx].clients[client_idx];
+        let client_bw = unsafe { (*c).bw };
+        let client_h = unsafe { (*c).h };
+        
+        if i < nmaster as usize {
+            let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
             resize(
                 state,
-                client,
-                mon.wx,
-                mon.wy,
-                mon.ww - 2 * client.bw,
-                mon.wh - 2 * client.bw,
+                mon_idx,
+                client_idx,
+                wx,
+                wy + my,
+                mw - (2 * client_bw),
+                h - (2 * client_bw),
                 false,
-            )
-        };
-        c = unsafe { next_tiled(client.next) };
-    }
-}
-
-#[allow(dead_code)]
-unsafe fn arrange(state: &mut GmuxState, m: *mut Monitor) {
-    if !m.is_null() {
-        show_hide(state, unsafe { (*m).stack });
-    } else {
-        let mut mon = state.mons;
-        while !mon.is_null() {
-            show_hide(state, unsafe { (*mon).stack });
-            mon = unsafe { (*mon).next };
-        }
-    }
-    if !m.is_null() {
-        unsafe { arrange_mon(state, m) };
-        unsafe { restack(state, m) };
-    } else {
-        let mut mon = state.mons;
-        while !mon.is_null() {
-            unsafe { arrange_mon(state, mon) };
-            mon = unsafe { (*mon).next };
-        }
-    }
-}
-
-#[allow(dead_code)]
-unsafe fn arrange_mon(state: &mut GmuxState, m: *mut Monitor) {
-    if m.is_null() {
-        return;
-    }
-    // call current layout's arrange
-    let mon = unsafe { &mut *m };
-    if mon.lt[mon.sellt as usize].is_null() {
-        return;
-    }
-    let layout = unsafe { &*mon.lt[mon.sellt as usize] };
-    (layout.arrange)(state, m);
-}
-
-#[allow(dead_code)]
-unsafe fn show_hide(state: &mut GmuxState, c: *mut Client) {
-    if c.is_null() {
-        return;
-    }
-    if is_visible(&*c) {
-        // Show clients top down
-        unsafe { xlib::XMoveWindow(state.dpy, (*c).win, (*c).x, (*c).y); }
-        if ((*(*c).mon).lt[(*(*c).mon).sellt as usize]).is_null()
-            || (*c).isfloating
-                && !(*c).isfullscreen
-        {
-            // For floating or unmanaged layout, ensure correct size
-            unsafe { resize(state, c, (*c).x, (*c).y, (*c).w, (*c).h, false); }
-        }
-        show_hide(state, (*c).snext);
-    } else {
-        // Hide clients bottom up
-        show_hide(state, (*c).snext);
-        unsafe { xlib::XMoveWindow(state.dpy, (*c).win, -2 * client_width(&*c), (*c).y); }
-    }
-}
-
-#[allow(dead_code)]
-unsafe fn restack(state: &mut GmuxState, m: *mut Monitor) {
-    if m.is_null() {
-        return;
-    }
-    drawbar(state, m);
-    if (*m).sel.is_null() {
-        return;
-    }
-    if (*(*m).sel).isfloating || ((*m).lt[(*m).sellt as usize]).is_null() {
-        xlib::XRaiseWindow(state.dpy, (*(*m).sel).win);
-    }
-
-    if !((*m).lt[(*m).sellt as usize]).is_null() {
-        let mut wc: xlib::XWindowChanges = std::mem::zeroed();
-        wc.stack_mode = xlib::Below as i32;
-        wc.sibling = (*m).barwin;
-        let mut c = (*m).stack;
-        while !c.is_null() {
-            if !(*c).isfloating && is_visible(&*c) {
-                xlib::XConfigureWindow(state.dpy, (*c).win, (xlib::CWSibling | xlib::CWStackMode) as u32, &mut wc);
-                wc.sibling = (*c).win;
+            );
+            if my + client_h < wh {
+                my += client_h;
             }
-            c = (*c).snext;
+        } else {
+            let h = (wh - ty) / (n - i) as i32;
+            resize(
+                state,
+                mon_idx,
+                client_idx,
+                wx + mw,
+                wy + ty,
+                ww - mw - (2 * client_bw),
+                h - (2 * client_bw),
+                false,
+            );
+            if ty + client_h < wh {
+                ty += client_h;
+            }
         }
     }
-    xlib::XSync(state.dpy, 0);
+}
+
+#[allow(dead_code)]
+unsafe extern "C" fn monocle(state: &mut GmuxState, mon_idx: usize) {
+    let mon = &state.mons[mon_idx];
+    let tiled_client_indices: Vec<_> = mon.clients.iter().enumerate()
+        .filter(|(_, c)| unsafe { !(*(**c)).isfloating && is_visible(&*(**c), mon) })
+        .map(|(i, _)| i)
+        .collect();
+
+    let wx = mon.wx;
+    let wy = mon.wy;
+    let ww = mon.ww;
+    let wh = mon.wh;
+
+    for &client_idx in &tiled_client_indices {
+        let c = state.mons[mon_idx].clients[client_idx];
+        let client_bw = unsafe { (*c).bw };
+        resize(state, mon_idx, client_idx, wx, wy, ww - 2 * client_bw, wh - 2 * client_bw, false);
+    }
+}
+
+#[allow(dead_code)]
+fn show_hide(state: &mut GmuxState, stack: &[*mut Client]) {
+    for c_ptr in stack.iter().rev() {
+        let c = unsafe { &mut **c_ptr };
+        if is_visible(c, &state.mons[c.mon_idx]) {
+            unsafe { xlib::XMoveWindow(state.dpy, c.win, c.x, c.y) };
+            if state.mons[c.mon_idx].lt.get(state.mons[c.mon_idx].sellt as usize).is_none()
+                || c.isfloating && !c.isfullscreen
+            {
+                let client_idx = state.mons[c.mon_idx].clients.iter().position(|&x| x == *c_ptr).unwrap();
+                unsafe { resize(state, c.mon_idx, client_idx, c.x, c.y, c.w, c.h, false) };
+            }
+        }
+    }
+
+    for c_ptr in stack {
+        let c = unsafe { &**c_ptr };
+        if !is_visible(c, &state.mons[c.mon_idx]) {
+            unsafe { xlib::XMoveWindow(state.dpy, c.win, -2 * client_width(c), c.y) };
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1023,59 +1095,53 @@ unsafe fn unmanage(state: &mut GmuxState, c: *mut Client, _destroyed: bool) {
     if c.is_null() {
         return;
     }
+    let mon_idx = unsafe { (*c).mon_idx };
+    let dpy = state.dpy;
     detach(state, c);
     detachstack(state, c);
-    arrange(state, (*c).mon);
-    xlib::XUngrabButton(state.dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, (*c).win);
-    xlib::XSetWindowBorder(state.dpy, (*c).win, 0);
-    xlib::XRemoveFromSaveSet(state.dpy, (*c).win);
-    xlib::XDestroyWindow(state.dpy, (*c).win);
+    state.arrange(Some(mon_idx));
+    xlib::XUngrabButton(dpy, xlib::AnyButton as u32, xlib::AnyModifier as u32, unsafe { (*c).win });
+    xlib::XSetWindowBorder(dpy, unsafe { (*c).win }, 0);
+    xlib::XRemoveFromSaveSet(dpy, unsafe { (*c).win });
+    xlib::XDestroyWindow(dpy, unsafe { (*c).win });
 }
 
 #[allow(dead_code)]
 unsafe fn pop(state: &mut GmuxState, c: *mut Client) {
-    unsafe { detach(state, c) };
-    unsafe { attach(state, c) };
-    unsafe { focus(state, c) };
-    unsafe { arrange(state, (*c).mon) };
+    let mon_idx = unsafe { (*c).mon_idx };
+    detach(state, c);
+    attach(state, c);
+    focus(state, c);
+    state.arrange(Some(mon_idx));
 }
 
 #[allow(dead_code)]
 unsafe fn detach(_state: &mut GmuxState, c: *mut Client) {
-    let mut tc = unsafe { &mut (*(*c).mon).clients };
-    while !(*tc).is_null() && *tc != c {
-        tc = unsafe { &mut (**tc).next };
-    }
-    *tc = unsafe { (*c).next };
+    let mon = &mut _state.mons[unsafe { (*c).mon_idx }];
+    mon.clients.retain(|&x| x != c);
 }
 
 #[allow(dead_code)]
 unsafe fn attach(_state: &mut GmuxState, c: *mut Client) {
-    let mon = unsafe { &mut *(*c).mon };
-    unsafe { (*c).next = mon.clients };
-    mon.clients = c;
+    let mon = &mut _state.mons[unsafe { (*c).mon_idx }];
+    mon.clients.insert(0, c);
 }
 
 #[allow(dead_code)]
 unsafe fn attachstack(_state: &mut GmuxState, c: *mut Client) {
-    let mon = unsafe { &mut *(*c).mon };
-    unsafe { (*c).snext = mon.stack };
-    mon.stack = c;
+    let mon = &mut _state.mons[unsafe { (*c).mon_idx }];
+    mon.stack.insert(0, c);
 }
 
 #[allow(dead_code)]
 unsafe fn detachstack(_state: &mut GmuxState, c: *mut Client) {
-    let mon = &mut *(*c).mon;
-    let mut tc = &mut mon.stack;
-    while !(*tc).is_null() && *tc != c {
-        tc = &mut (**tc).snext;
-    }
-    *tc = (*c).snext;
+    let mon = &mut _state.mons[unsafe { (*c).mon_idx }];
+    mon.stack.retain(|&x| x != c);
 }
 
 // DestroyNotify handler to unmanage windows
 unsafe extern "C" fn destroy_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
-    let ev = &*(e as *mut xlib::XDestroyWindowEvent);
+    let ev = unsafe { &*(e as *mut xlib::XDestroyWindowEvent) };
     let c = wintoclient(state, ev.window);
     if !c.is_null() {
         unmanage(state, c, true);
@@ -1084,19 +1150,25 @@ unsafe extern "C" fn destroy_notify(state: &mut GmuxState, e: *mut xlib::XEvent)
 
 #[allow(dead_code)]
 unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
-    if c.is_null() || !is_visible(unsafe { &*c }) {
-        let mut temp_c = unsafe { (*state.selmon).stack };
-        while !temp_c.is_null() && !is_visible(unsafe { &*temp_c }) {
-            temp_c = unsafe { (*temp_c).snext };
+    if c.is_null() {
+        let vis_clients: Vec<_> = state.mons[state.selmon].clients.iter().filter(|client| unsafe { is_visible(&***client, &state.mons[state.selmon])}).collect();
+        if !vis_clients.is_empty() {
+             let first_vis = vis_clients[0];
+             state.mons[state.selmon].sel = Some(*first_vis);
         }
     }
-    let selmon = unsafe { &mut *state.selmon };
-    if !selmon.sel.is_null() && selmon.sel != c {
-        unsafe { unfocus(state, selmon.sel, false) };
+    
+    let selmon_idx = state.selmon;
+    let old_sel = state.mons[selmon_idx].sel;
+
+    if old_sel.is_some() && old_sel.unwrap() != c {
+        unsafe { unfocus(state, old_sel.unwrap(), false) };
     }
+
     if !c.is_null() {
-        if unsafe { (*c).mon } != state.selmon {
-            state.selmon = unsafe { (*c).mon };
+        let mon_idx = unsafe { (*c).mon_idx };
+        if mon_idx != selmon_idx {
+            state.selmon = mon_idx;
         }
         if unsafe { (*c).isurgent } {
             // seturgent(c, 0);
@@ -1106,14 +1178,16 @@ unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
         grabbuttons(state, c, true);
         updatenumlockmask(state);
         let keys = grabkeys(state);
-        let modifiers = [0, xlib::LockMask, state.numlockmask, state.numlockmask | xlib::LockMask];
+        let dpy = state.dpy;
+        let numlockmask = state.numlockmask;
+        let modifiers = [0, xlib::LockMask, numlockmask, numlockmask | xlib::LockMask];
         for key in keys.iter() {
             unsafe {
-                let code = xlib::XKeysymToKeycode(state.dpy, key.keysym as u64);
+                let code = xlib::XKeysymToKeycode(dpy, key.keysym as u64);
                 if code != 0 {
                     for modifier in modifiers.iter() {
                         xlib::XGrabKey(
-                            state.dpy,
+                            dpy,
                             code as c_int,
                             key.mask | *modifier,
                             (*c).win,
@@ -1128,12 +1202,14 @@ unsafe fn focus(state: &mut GmuxState, c: *mut Client) {
         // XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
         unsafe { xlib::XSetInputFocus(state.dpy, (*c).win, xlib::RevertToPointerRoot, xlib::CurrentTime) };
     } else {
+        let dpy = state.dpy;
+        let root = state.root;
         unsafe {
-            xlib::XSetInputFocus(state.dpy, state.root, xlib::RevertToPointerRoot, xlib::CurrentTime)
+            xlib::XSetInputFocus(dpy, root, xlib::RevertToPointerRoot, xlib::CurrentTime)
         };
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
     }
-    selmon.sel = c;
+    state.mons[state.selmon].sel = Some(c);
     drawbars(state);
 }
 
@@ -1158,13 +1234,13 @@ unsafe fn unfocus(state: &mut GmuxState, c: *mut Client, setfocus: bool) {
 unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &mut (*(e as *mut xlib::XButtonPressedEvent)) };
     let mut _click = Clk::RootWin;
-    let m = unsafe { wintomon(state, ev.window) };
+    let m = unsafe { state.wintomon(ev.window) };
     if m != state.selmon {
-        unsafe { unfocus(state, (*state.selmon).sel, true) };
+        unsafe { unfocus(state, state.mons[state.selmon].sel.unwrap_or(null_mut()), true) };
         state.selmon = m;
         unsafe { focus(state, null_mut()) };
     }
-    if ev.window == unsafe { (*state.selmon).barwin } {
+    if ev.window == state.mons[state.selmon].barwin {
         let _i = 0;
         let _x = 0;
         let _arg = Arg { i: 0 };
@@ -1189,7 +1265,7 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
         let c = unsafe { wintoclient(state, ev.window) };
         if !c.is_null() {
             unsafe { focus(state, c) };
-            unsafe { restack(state, state.selmon) };
+            state.restack(state.selmon);
             unsafe { xlib::XAllowEvents(state.dpy, xlib::ReplayPointer, xlib::CurrentTime) };
             _click = Clk::ClientWin;
         }
@@ -1202,9 +1278,9 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
     if ev.window != state.root {
         return;
     }
-    let m = unsafe { recttomon(state, ev.x_root, ev.y_root, 1, 1) };
+    let m = state.recttomon(ev.x_root, ev.y_root, 1, 1);
     if m != state.selmon {
-        unsafe { unfocus(state, (*state.selmon).sel, true) };
+        unsafe { unfocus(state, state.mons[state.selmon].sel.unwrap_or(null_mut()), true) };
         state.selmon = m;
         unsafe { focus(state, null_mut()) };
     }
@@ -1213,7 +1289,7 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
 // Focus follows mouse when pointer enters a client window
 #[allow(dead_code)]
 unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
-    let ev = &*(e as *mut xlib::XCrossingEvent);
+    let ev = unsafe { &*(e as *mut xlib::XCrossingEvent) };
     // ignore non-normal or inferior events (same filtering as dwm)
     if (ev.mode != xlib::NotifyNormal as i32) || ev.detail == xlib::NotifyInferior as i32 {
         return;
@@ -1223,7 +1299,7 @@ unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
         return;
     }
     let c = wintoclient(state, ev.window);
-    if !c.is_null() && c != (*state.selmon).sel {
+    if !c.is_null() && Some(c) != state.mons[state.selmon].sel {
         focus(state, c);
     }
 }
@@ -1258,8 +1334,8 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
     client.oldh = wa.height;
     client.oldbw = wa.border_width;
     // Assign to currently selected tag set so client is visible
-    client.tags = unsafe { (*state.selmon).tagset[(*state.selmon).seltags as usize] };
-    client.mon = state.selmon;
+    client.tags = state.mons[state.selmon].tagset[state.mons[state.selmon].seltags as usize];
+    client.mon_idx = state.selmon;
 
     // updatetitle(c);
     // XGetTransientForHint
@@ -1269,7 +1345,7 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
         attach(state, c);
         attachstack(state, c);
         // Recalculate tiling/layout with the newly added client
-        unsafe { arrange(state, state.selmon) };
+        state.arrange(Some(state.selmon));
     }
 
     // ... More logic to come ...
@@ -1281,39 +1357,13 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
 }
 
 #[allow(dead_code)]
-unsafe fn wintomon(state: &mut GmuxState, w: xlib::Window) -> *mut Monitor {
-    let mut x = 0;
-    let mut y = 0;
-    if w == state.root && unsafe { getrootptr(state, &mut x, &mut y) } {
-        return unsafe { recttomon(state, x, y, 1, 1) };
-    }
-    let mut m = state.mons;
-    while !m.is_null() {
-        if w == unsafe { (*m).barwin } {
-            return m;
-        }
-        m = unsafe { (*m).next };
-    }
-    let c = unsafe { wintoclient(state, w) };
-    if !c.is_null() {
-        return unsafe { (*c).mon };
-    }
-    state.selmon
-}
-
-
-#[allow(dead_code)]
 unsafe fn wintoclient(state: &mut GmuxState, w: xlib::Window) -> *mut Client {
-    let mut m = state.mons;
-    while !m.is_null() {
-        let mut c = unsafe { (*m).clients };
-        while !c.is_null() {
-            if unsafe { (*c).win } == w {
-                return c;
+    for m in &state.mons {
+        for c_ptr in &m.clients {
+            if unsafe { (**c_ptr).win } == w {
+                return *c_ptr;
             }
-            c = unsafe { (*c).next };
         }
-        m = unsafe { (*m).next };
     }
     null_mut()
 }
@@ -1338,23 +1388,6 @@ unsafe fn getrootptr(state: &mut GmuxState, x: &mut i32, y: &mut i32) -> bool {
     }
 }
 
-#[allow(dead_code)]
-unsafe fn recttomon(state: &mut GmuxState, x: i32, y: i32, w: i32, h: i32) -> *mut Monitor {
-    let mut r = state.selmon;
-    let mut area = 0;
-    let mut m = state.mons;
-    while !m.is_null() {
-        let mon = unsafe { &*m };
-        let a = intersect(x, y, w, h, mon);
-        if a > area {
-            area = a;
-            r = m;
-        }
-        m = unsafe { (*m).next };
-    }
-    r
-}
-
 fn intersect(x: i32, y: i32, w: i32, h: i32, m: &Monitor) -> i32 {
     std::cmp::max(
         0,
@@ -1374,35 +1407,17 @@ fn grabbuttons(_state: &mut GmuxState, _c: *mut Client, _focused: bool) {
 
 // Helper functions for layouts
 #[allow(dead_code)]
-unsafe fn next_tiled(mut c: *mut Client) -> *mut Client {
-    while !c.is_null() {
-        let client = unsafe { &*c };
-        if !client.isfloating && is_visible(client) {
-            break;
-        }
-        c = client.next;
-    }
-    c
-}
-
-#[allow(dead_code)]
 unsafe fn resize(
     state: &mut GmuxState,
-    c: *mut Client,
+    mon_idx: usize,
+    client_idx: usize,
     x: i32,
     y: i32,
     w: i32,
     h: i32,
     _interact: bool,
 ) {
-    let client = unsafe { &mut *c };
-    // For now, we'll just resize without applying size hints
-    // applysizehints logic will be added later.
-    unsafe { resize_client(state, client, x, y, w, h) };
-}
-
-#[allow(dead_code)]
-unsafe fn resize_client(state: &mut GmuxState, c: *mut Client, x: i32, y: i32, w: i32, h: i32) {
+    let c = state.mons[mon_idx].clients[client_idx];
     let client = unsafe { &mut *c };
     client.oldx = client.x;
     client.x = x;
@@ -1424,11 +1439,7 @@ unsafe fn resize_client(state: &mut GmuxState, c: *mut Client, x: i32, y: i32, w
 }
 
 #[allow(dead_code)]
-fn is_visible(c: &Client) -> bool {
-    unsafe { is_visible_on_mon(c, &*c.mon) }
-}
-
-fn is_visible_on_mon(c: &Client, m: &Monitor) -> bool {
+fn is_visible(c: &Client, m: &Monitor) -> bool {
     (c.tags & m.tagset[m.seltags as usize]) != 0
 }
 
@@ -1484,26 +1495,14 @@ fn run(state: &mut GmuxState) {
 
 #[allow(dead_code)]
 fn cleanup(state: &mut GmuxState) {
+    for i in 0..state.mons.len() {
+        while !state.mons[i].stack.is_empty() {
+            let c = state.mons[i].stack.pop().unwrap();
+            unsafe { unmanage(state, c, false) };
+        }
+    }
     unsafe {
-        let _a = Arg { ui: !0 };
-        let mut m = state.mons;
-        while !m.is_null() {
-            while !(*m).stack.is_null() {
-            }
-            m = (*m).next;
-        }
-
-        xlib::XUngrabKey(state.dpy, xlib::AnyKey, xlib::AnyModifier, state.root);
-        while !state.mons.is_null() {
-        }
-
-        for _i in 0..Cur::Last as usize {
-        }
-        state.drw.free();
-        xlib::XDestroyWindow(state.dpy, state.wmcheckwin);
-        xlib::XSync(state.dpy, 0);
-        xlib::XSetInputFocus(state.dpy, xlib::PointerRoot as u64, xlib::RevertToPointerRoot, xlib::CurrentTime);
-        xlib::XDeleteProperty(state.dpy, state.root, state.netatom[Net::ActiveWindow as usize]);
+        xlib::XUngrabKey(state.dpy, xlib::AnyKey as c_int, xlib::AnyModifier, state.root);
     }
 }
 
@@ -1597,11 +1596,12 @@ fn main() {
             scheme: null_mut(),
             fonts: Vec::new(),
         },
-        mons: null_mut(),
-        selmon: null_mut(),
+        mons: Vec::new(),
+        selmon: 0,
         root: 0,
         wmcheckwin: 0,
         xerror: false,
+        tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
     };
     
     state.handler[xlib::KeyPress as usize] = Some(keypress_wrapper);
@@ -1619,15 +1619,16 @@ fn main() {
             panic!("dwm: cannot open display");
         }
         // Install permissive X error handler so expected errors (BadWindow, etc.)
-        // don’t terminate the WM when closing windows.
+        // don't terminate the WM when closing windows.
         xlib::XSetErrorHandler(Some(xerror_ignore));
         
         // checkotherwm(&mut state);
         setup(&mut state);
         scan(&mut state);
         run(&mut state);
-        cleanup(&mut state);
         
-        xlib::XCloseDisplay(state.dpy);
+        let dpy = state.dpy;
+        cleanup(&mut state);
+        xlib::XCloseDisplay(dpy);
     }
 }
