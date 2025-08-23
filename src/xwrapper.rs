@@ -3,7 +3,7 @@ use std::os::raw::{c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 
-use crate::{die, ecalloc};
+use crate::die;
 use fontconfig::{self};
 
 struct Drw {
@@ -144,8 +144,9 @@ impl Drw {
     }
 
     pub fn scm_create(&mut self, clr_names: &[&str]) -> *mut Clr {
-        let clrs = ecalloc(clr_names.len(), std::mem::size_of::<Clr>()) as *mut Clr;
-        for (i, clr_name) in clr_names.iter().enumerate() {
+        let mut clrs = Vec::with_capacity(clr_names.len());
+        for clr_name in clr_names {
+            let mut clr = unsafe { std::mem::zeroed() };
             let cstr = CString::new(*clr_name).expect("color name contains NUL");
             unsafe {
                 if xft::XftColorAllocName(
@@ -153,14 +154,15 @@ impl Drw {
                     xlib::XDefaultVisual(self.dpy, self.screen),
                     xlib::XDefaultColormap(self.dpy, self.screen),
                     cstr.as_ptr(),
-                    &mut *clrs.add(i),
+                    &mut clr,
                 ) == 0
                 {
                     die("cannot allocate color");
                 }
             }
+            clrs.push(clr);
         }
-        clrs
+        Box::into_raw(clrs.into_boxed_slice()) as *mut Clr
     }
 
     pub fn font_getexts(&self, font: *mut Fnt, text: &str, len: u32, w: &mut u32, h: &mut u32) {
@@ -251,6 +253,9 @@ impl Drw {
 // Newtype wrapper for Window
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window(pub xlib::Window);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorId(pub u64);
 
 impl Default for Window {
     fn default() -> Self {
@@ -442,6 +447,16 @@ impl XWrapper {
 
     pub fn create_font_cursor(&self, shape: u32) -> xlib::Cursor {
         unsafe { xlib::XCreateFontCursor(self.dpy, shape) }
+    }
+
+    pub fn set_window_cursor(&self, win: Window, cursor_id: CursorId) {
+        unsafe {
+            xlib::XDefineCursor(self.dpy, win.0, cursor_id.0);
+        }
+    }
+
+    pub fn create_font_cursor_as_id(&self, shape: u32) -> CursorId {
+        CursorId(unsafe { xlib::XCreateFontCursor(self.dpy, shape) })
     }
 
     pub fn default_depth(&self, screen_num: i32) -> c_int {

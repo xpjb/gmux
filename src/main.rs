@@ -9,7 +9,7 @@ use x11::keysym;
 mod xwrapper;
 mod command;
 use command::*;
-use xwrapper::{KeySpec, SchemeId, Window, XWrapper};
+use xwrapper::{CursorId, KeySpec, SchemeId, Window, XWrapper};
 
 // From <X11/Xproto.h>
 const X_SET_INPUT_FOCUS: u8 = 42;
@@ -35,23 +35,13 @@ const BORDERPX: i32 = 2;
 const BROKEN_UTF8: &str = "";
 // ======================================================================
 
-fn ecalloc(nmemb: usize, size: usize) -> *mut std::ffi::c_void {
-    unsafe {
-        let ptr = libc::calloc(nmemb, size);
-        if ptr.is_null() {
-            panic!("fatal: could not calloc");
-        }
-        ptr
-    }
-}
-
 fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     let is_selmon = state.selmon == mon_idx;
     let mon = &state.mons[mon_idx];
     let ww = mon.ww;
     let bh = state.bh;
     let barwin = mon.barwin;
-    let ltsymbol = mon.ltsymbol;
+    let ltsymbol = &mon.ltsymbol;
     let clients = &mon.clients;
     let sel = mon.sel;
     let scheme_norm = state.schemes[0];
@@ -64,7 +54,7 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
 
     if is_selmon {
-        let status = unsafe { CStr::from_ptr(state.stext.as_ptr()).to_str().unwrap_or("") };
+        let status = &state.stext;
         tw = state.xwrapper.text(scheme_norm, ww as i32 - tw, 0, 0, 0, 0, status, false)
             + state.xwrapper.get_font_height() as i32;
     }
@@ -75,7 +65,7 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     }
     state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
 
-    let ltsymbol_str = unsafe { CStr::from_ptr(ltsymbol.as_ptr()).to_str().unwrap_or("") };
+    let ltsymbol_str = &mon.ltsymbol;
     if !ltsymbol_str.is_empty() {
         w = state.xwrapper.text(scheme_norm, 0, 0, 0, 0, 0, ltsymbol_str, false);
         state.xwrapper.rect(scheme_norm, x, 0, w as u32, bh as u32, true, true);
@@ -117,7 +107,7 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     unsafe {
         if let Some(s_idx) = mon.sel {
             let sel_client = &mon.clients[s_idx];
-            let name = CStr::from_ptr(sel_client.name.as_ptr()).to_str().unwrap_or(BROKEN_UTF8);
+            let name = &sel_client.name;
             state.xwrapper.text(scheme_sel, x, 0, w as u32, bh as u32, 0, name, false);
             if sel_client.isfloating {
                 state.xwrapper.rect(scheme_sel, x + 5, 5, (w - 10) as u32, (bh - 2) as u32, false, false);
@@ -162,12 +152,17 @@ fn updatenumlockmask(state: &mut GmuxState) {
     }
 }
 
-struct SyncPtr(*const c_char);
-unsafe impl Sync for SyncPtr {}
+static LAYOUTS: [Layout; 3] = [
+    Layout { symbol: "[]=", arrange: Some(tile) },
+    Layout { symbol: "><>", arrange: Some(monocle) },
+    Layout { symbol: "[M]", arrange: Some(monocle) },
+];
 
-#[derive(Copy, Clone)]
-struct SyncVoidPtr(*const c_void);
-unsafe impl Sync for SyncVoidPtr {}
+#[derive(Debug)]
+struct Layout {
+    symbol: &'static str,
+    arrange: Option<unsafe extern "C" fn(&mut GmuxState, usize)>,
+}
 
 // Enums
 
@@ -213,12 +208,14 @@ enum Clk {
 
 // Structs
 
-#[derive(Copy, Clone)]
-union Arg {
-    i: i32,
-    ui: u32,
-    f: f32,
-    v: SyncVoidPtr,
+#[derive(Clone, Copy)]
+enum Arg {
+    Int(i32),
+    UInt(u32),
+    Float(f32),
+    Layout(&'static Layout),
+    Command(&'static Command),
+    None,
 }
 
 
@@ -230,9 +227,9 @@ struct Button {
     arg: Arg,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct Monitor {
-    ltsymbol: [c_char; 16],
+    ltsymbol: String,
     mfact: f32,
     nmaster: i32,
     
@@ -262,13 +259,43 @@ struct Monitor {
     sel: Option<usize>,
     stack: Vec<usize>,
     barwin: Window,
-    lt: [*const Layout; 2],
+    lt: [&'static Layout; 2],
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Default for Monitor {
+    fn default() -> Self {
+        Monitor {
+            ltsymbol: String::new(),
+            mfact: 0.0,
+            nmaster: 0,
+            num: 0,
+            by: 0,
+            mx: 0,
+            my: 0,
+            mw: 0,
+            mh: 0,
+            wx: 0,
+            wy: 0,
+            ww: 0,
+            wh: 0,
+            seltags: 0,
+            sellt: 0,
+            tagset: [0, 0],
+            showbar: false,
+            topbar: false,
+            clients: Vec::new(),
+            sel: None,
+            stack: Vec::new(),
+            barwin: Window(0),
+            lt: [&LAYOUTS[0], &LAYOUTS[1]],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct Client {
     
-    name: [c_char; 256],
+    name: String,
     
     mina: f32,
     
@@ -311,8 +338,6 @@ struct Client {
     oldstate: bool,
     
     isfullscreen: bool,
-    next: *mut Client,
-    snext: *mut Client,
     mon_idx: usize,
     win: Window,
 }
@@ -323,12 +348,6 @@ struct Key {
     keysym: u32,
     func: unsafe extern "C" fn(&mut GmuxState, &Arg),
     arg: Arg,
-}
-
-
-struct Layout {
-    symbol: SyncPtr,
-    arrange: Option<unsafe extern "C" fn(&mut GmuxState, usize)>,
 }
 
 
@@ -347,7 +366,7 @@ type Clr = xft::XftColor;
 // Global state
 struct GmuxState {
     
-    stext: [c_char; 256],
+    stext: String,
     screen: c_int,
     sw: c_int,
     sh: c_int,
@@ -361,7 +380,7 @@ struct GmuxState {
     wmatom: [xlib::Atom; WM::Last as usize],
     netatom: [xlib::Atom; Net::Last as usize],
     running: c_int,
-    cursor: [*mut xlib::Cursor; Cur::Last as usize],
+    cursor: [CursorId; Cur::Last as usize],
     schemes: [SchemeId; 2],
     xwrapper: XWrapper,
     mons: Vec<Monitor>,
@@ -411,42 +430,38 @@ impl GmuxState {
     }
 
     
-    unsafe fn arrange(&mut self, mon_idx: Option<usize>) {
+    fn arrange(&mut self, mon_idx: Option<usize>) {
         if let Some(idx) = mon_idx {
             if let Some(mon) = self.mons.get_mut(idx) {
                 let stack = mon.stack.clone();
                 show_hide(self, idx, &stack);
-                unsafe {
-                    self.arrange_mon(idx);
-                    self.restack(idx);
-                }
+                self.arrange_mon(idx);
+                self.restack(idx);
             }
         } else {
             for i in 0..self.mons.len() {
                 let stack = self.mons[i].stack.clone();
                 show_hide(self, i, &stack);
-                unsafe { self.arrange_mon(i) };
+                self.arrange_mon(i);
             }
             for i in 0..self.mons.len() {
-                unsafe { self.restack(i) };
+                self.restack(i);
             }
         }
     }
 
     
-    unsafe fn arrange_mon(&mut self, mon_idx: usize) {
+    fn arrange_mon(&mut self, mon_idx: usize) {
         if let Some(mon) = self.mons.get(mon_idx) {
-            if let Some(layout) = mon.lt.get(mon.sellt as usize) {
-                if let Some(arrange_fn) = unsafe { (**layout).arrange } {
-                    unsafe { arrange_fn(self, mon_idx) };
-                }
+            let layout = mon.lt[mon.sellt as usize];
+            if let Some(arrange_fn) = layout.arrange {
+                unsafe { arrange_fn(self, mon_idx) };
             }
         }
     }
 
     
-    unsafe fn restack(&mut self, mon_idx: usize) {
-        let dpy = self.xwrapper.dpy();
+    fn restack(&mut self, mon_idx: usize) {
         drawbar(self, mon_idx);
 
         if let Some(m) = self.mons.get_mut(mon_idx) {
@@ -455,10 +470,10 @@ impl GmuxState {
             }
             let sel_idx = m.sel.unwrap();
             let sel = &m.clients[sel_idx];
-            if sel.isfloating || m.lt.get(m.sellt as usize).is_none() {
+            if sel.isfloating || m.lt[m.sellt as usize].arrange.is_none() {
                 self.xwrapper.raise_window(sel.win);
             }
-            if m.lt.get(m.sellt as usize).is_some() {
+            if m.lt[m.sellt as usize].arrange.is_some() {
                 let mut wc: xlib::XWindowChanges = unsafe { std::mem::zeroed() };
                 wc.stack_mode = xlib::Below as i32;
                 wc.sibling = m.barwin.0;
@@ -612,10 +627,7 @@ fn setup(state: &mut GmuxState) {
         state.schemes[1] = state.xwrapper.scm_create(colors[1]);
 
         // initialise status text sample
-        let sample_status = b"gmux";
-        for (i, b) in sample_status.iter().enumerate() {
-            state.stext[i] = *b as i8;
-        }
+        state.stext = "gmux".to_string();
 
         drawbars(state);
 
@@ -652,11 +664,7 @@ fn setup(state: &mut GmuxState) {
         }
         mon.lt[0] = &LAYOUTS[0];
         mon.lt[1] = &LAYOUTS[1];
-        let symbol = CStr::from_ptr(LAYOUTS[0].symbol.0).to_str().unwrap();
-        let c_symbol = CString::new(symbol).unwrap();
-        let dest = mon.ltsymbol.as_mut_ptr();
-        let src = c_symbol.as_ptr();
-        std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
+        mon.ltsymbol = LAYOUTS[0].symbol.to_string();
         mon.wx = 0;
         mon.ww = state.sw;
         let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
@@ -682,9 +690,9 @@ fn setup(state: &mut GmuxState) {
         state.mons.push(mon);
         state.selmon = state.mons.len() - 1;
 
-        state.cursor[Cur::Normal as usize] = drw_cur_create(state, 68); 
-        state.cursor[Cur::Resize as usize] = drw_cur_create(state, 120);
-        state.cursor[Cur::Move as usize] = drw_cur_create(state, 52);
+        state.cursor[Cur::Normal as usize] = state.xwrapper.create_font_cursor_as_id(68);
+        state.cursor[Cur::Resize as usize] = state.xwrapper.create_font_cursor_as_id(120);
+        state.cursor[Cur::Move as usize] = state.xwrapper.create_font_cursor_as_id(52);
         
         state.wmcheckwin = state.xwrapper.create_simple_window(state.root, 0, 0, 1, 1, 0, 0, 0);
         let wmcheckwin_val = state.wmcheckwin.0;
@@ -702,7 +710,7 @@ fn setup(state: &mut GmuxState) {
         state.xwrapper.delete_property(state.root, state.netatom[Net::ClientList as usize]);
 
         let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
-        wa.cursor = *state.cursor[Cur::Normal as usize];
+        wa.cursor = state.cursor[Cur::Normal as usize].0;
         wa.event_mask = (xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask
             | xlib::ButtonPressMask | xlib::PointerMotionMask | xlib::EnterWindowMask
             | xlib::LeaveWindowMask | xlib::StructureNotifyMask | xlib::PropertyChangeMask
@@ -740,41 +748,33 @@ fn die(s: &str) {
     std::process::exit(1);
 }
 
-unsafe fn drw_cur_create(state: &mut GmuxState, shape: i32) -> *mut xlib::Cursor {
-    let cur = ecalloc(1, std::mem::size_of::<xlib::Cursor>()) as *mut xlib::Cursor;
-    unsafe {
-        *cur = state.xwrapper.create_font_cursor(shape as u32);
-    }
-    cur
-}
-
 fn grabkeys(_state: &mut GmuxState) -> Vec<Key> {
     let mut keys: Vec<Key> = vec![];
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_p, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Dmenu as *const _ as *const c_void) } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Terminal as *const _ as *const c_void) } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_b, func: togglebar, arg: Arg { i: 0 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_j, func: focusstack, arg: Arg { i: 1 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_k, func: focusstack, arg: Arg { i: -1 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_i, func: incnmaster, arg: Arg { i: 1 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_d, func: incnmaster, arg: Arg { i: -1 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_h, func: setmfact, arg: Arg { f: -0.05 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_l, func: setmfact, arg: Arg { f: 0.05 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, func: zoom, arg: Arg { i: 0 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, func: view, arg: Arg { i: 0 } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, func: killclient, arg: Arg { i: 0 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_t, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[0] as *const _ as *const c_void) } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_f, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[1] as *const _ as *const c_void) } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_m, func: setlayout, arg: Arg { v: SyncVoidPtr(&LAYOUTS[2] as *const _ as *const c_void) } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_space, func: setlayout, arg: Arg { v: SyncVoidPtr(null_mut()) } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, func: togglefloating, arg: Arg { i: 0 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_0, func: view, arg: Arg { ui: !0 } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, func: tag, arg: Arg { ui: !0 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, func: focusmon, arg: Arg { i: -1 } });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_period, func: focusmon, arg: Arg { i: 1 } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, func: tagmon, arg: Arg { i: -1 } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, func: tagmon, arg: Arg { i: 1 } });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg { i: 0 } });
-    keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg { v: SyncVoidPtr(&Command::Screenshot as *const _ as *const c_void) } });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_p, func: spawn, arg: Arg::Command(&Command::Dmenu) });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, func: spawn, arg: Arg::Command(&Command::Terminal) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_b, func: togglebar, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_j, func: focusstack, arg: Arg::Int(1) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_k, func: focusstack, arg: Arg::Int(-1) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_i, func: incnmaster, arg: Arg::Int(1) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_d, func: incnmaster, arg: Arg::Int(-1) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_h, func: setmfact, arg: Arg::Float(-0.05) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_l, func: setmfact, arg: Arg::Float(0.05) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, func: zoom, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, func: view, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, func: killclient, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_t, func: setlayout, arg: Arg::Layout(&LAYOUTS[0]) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_f, func: setlayout, arg: Arg::Layout(&LAYOUTS[1]) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_m, func: setlayout, arg: Arg::Layout(&LAYOUTS[2]) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_space, func: setlayout, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, func: togglefloating, arg: Arg::None });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_0, func: view, arg: Arg::UInt(!0) });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, func: tag, arg: Arg::UInt(!0) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, func: focusmon, arg: Arg::Int(-1) });
+    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_period, func: focusmon, arg: Arg::Int(1) });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, func: tagmon, arg: Arg::Int(-1) });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, func: tagmon, arg: Arg::Int(1) });
+    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg::None });
+    keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg::Command(&Command::Screenshot) });
 
     const TAGKEYS: &[(u32, u32)] = &[
         (keysym::XK_1, 0),
@@ -789,10 +789,10 @@ fn grabkeys(_state: &mut GmuxState) -> Vec<Key> {
     ];
 
     for &(keysym, tag_idx) in TAGKEYS {
-        keys.push(Key { mask: xlib::Mod1Mask, keysym, func: view, arg: Arg { ui: 1 << tag_idx } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask, keysym, func: toggleview, arg: Arg { ui: 1 << tag_idx } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym, func: tag, arg: Arg { ui: 1 << tag_idx } });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask | xlib::ShiftMask, keysym, func: toggletag, arg: Arg { ui: 1 << tag_idx } });
+        keys.push(Key { mask: xlib::Mod1Mask, keysym, func: view, arg: Arg::UInt(1 << tag_idx) });
+        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask, keysym, func: toggleview, arg: Arg::UInt(1 << tag_idx) });
+        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym, func: tag, arg: Arg::UInt(1 << tag_idx) });
+        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask | xlib::ShiftMask, keysym, func: toggletag, arg: Arg::UInt(1 << tag_idx) });
     }
 
     keys
@@ -807,18 +807,21 @@ const LOCK_MASK: u32 = xlib::LockMask;
 
 
 unsafe extern "C" fn spawn(_state: &mut GmuxState, arg: &Arg) {
-    let cmd_ptr = unsafe { arg.v.0 };
-    if cmd_ptr.is_null() {
-        return;
-    }
-    let cmd = unsafe { &*(cmd_ptr as *const Command) };
-    if unsafe { libc::fork() } == 0 {
-        unsafe {
-            libc::setsid();
-            let shell = CString::new("/bin/sh").unwrap();
-            let c_flag = CString::new("-c").unwrap();
-            let cmd_str = CString::new(cmd.str()).unwrap();
-            libc::execlp(shell.as_ptr(), shell.as_ptr(), c_flag.as_ptr(), cmd_str.as_ptr(), null_mut::<c_char>());
+    if let Arg::Command(cmd) = arg {
+        if unsafe { libc::fork() } == 0 {
+            unsafe {
+                libc::setsid();
+                let shell = CString::new("/bin/sh").unwrap();
+                let c_flag = CString::new("-c").unwrap();
+                let cmd_str = CString::new(cmd.str()).unwrap();
+                libc::execlp(
+                    shell.as_ptr(),
+                    shell.as_ptr(),
+                    c_flag.as_ptr(),
+                    cmd_str.as_ptr(),
+                    null_mut::<c_char>(),
+                );
+            }
         }
     }
 }
@@ -827,6 +830,7 @@ unsafe extern "C" fn spawn(_state: &mut GmuxState, arg: &Arg) {
 unsafe extern "C" fn togglebar(_state: &mut GmuxState, _arg: &Arg) {}
 
 unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
+    let i = if let Arg::Int(i) = arg { *i } else { return };
     let selmon_idx = state.selmon;
     let selmon = &mut state.mons[selmon_idx];
     if selmon.sel.is_none() {
@@ -844,7 +848,7 @@ unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
     }
 
     if let Some(pos) = visible_clients_indices.iter().position(|&i| i == sel_idx) {
-        c_idx = if arg.i > 0 {
+        c_idx = if i > 0 {
             visible_clients_indices[(pos + 1) % visible_clients_indices.len()]
         } else {
             visible_clients_indices[(pos + visible_clients_indices.len() - 1) % visible_clients_indices.len()]
@@ -860,35 +864,39 @@ unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
 }
 
 unsafe extern "C" fn incnmaster(state: &mut GmuxState, arg: &Arg) {
-    let selmon_idx = state.selmon;
-    let selmon = &mut state.mons[selmon_idx];
-    selmon.nmaster = std::cmp::max(selmon.nmaster + arg.i, 0);
-    state.arrange(Some(selmon_idx));
+    if let Arg::Int(i) = arg {
+        let selmon_idx = state.selmon;
+        let selmon = &mut state.mons[selmon_idx];
+        selmon.nmaster = std::cmp::max(selmon.nmaster + i, 0);
+        state.arrange(Some(selmon_idx));
+    }
 }
 
 unsafe extern "C" fn setmfact(state: &mut GmuxState, arg: &Arg) {
-    let selmon_idx = state.selmon;
-    let selmon = &mut state.mons[selmon_idx];
-    if selmon.lt.get(selmon.sellt as usize).is_none() {
-        return;
+    if let Arg::Float(f) = arg {
+        let selmon_idx = state.selmon;
+        let selmon = &mut state.mons[selmon_idx];
+        if selmon.lt[selmon.sellt as usize].arrange.is_none() {
+            return;
+        }
+        let new_f = if *f < 1.0 {
+            *f + selmon.mfact
+        } else {
+            *f - 1.0
+        };
+        if new_f < 0.05 || new_f > 0.95 {
+            return;
+        }
+        selmon.mfact = new_f;
+        state.arrange(Some(selmon_idx));
     }
-    let f = if arg.f < 1.0 {
-        arg.f + selmon.mfact
-    } else {
-        arg.f - 1.0
-    };
-    if f < 0.05 || f > 0.95 {
-        return;
-    }
-    selmon.mfact = f;
-    state.arrange(Some(selmon_idx));
 }
 
 unsafe extern "C" fn zoom(state: &mut GmuxState, _arg: &Arg) {
     let selmon_idx = state.selmon;
     if let Some(sel_idx) = state.mons[selmon_idx].sel {
         let c = &state.mons[selmon_idx].clients[sel_idx];
-        if unsafe { (*(*state.mons[selmon_idx].lt.get_unchecked(state.mons[selmon_idx].sellt as usize))).arrange.is_none() } || c.isfloating {
+        if state.mons[selmon_idx].lt[state.mons[selmon_idx].sellt as usize].arrange.is_none() || c.isfloating {
             return;
         }
 
@@ -909,10 +917,22 @@ unsafe extern "C" fn zoom(state: &mut GmuxState, _arg: &Arg) {
 }
 
 unsafe extern "C" fn view(state: &mut GmuxState, arg: &Arg) {
+    let ui = match arg {
+        Arg::UInt(ui) => *ui,
+        Arg::None => {
+            // This case handles the XK_Tab key to switch to the previous tag set.
+            let selmon = &mut state.mons[state.selmon];
+            selmon.seltags = (selmon.seltags + 1) % 2;
+            state.arrange(Some(state.selmon));
+            return;
+        },
+        _ => return,
+    };
+
     let selmon = &mut state.mons[state.selmon];
-    if (arg.ui & TAG_MASK) != 0 {
+    if (ui & TAG_MASK) != 0 {
         selmon.seltags = 0;
-        selmon.tagset[selmon.seltags as usize] = arg.ui & TAG_MASK;
+        selmon.tagset[selmon.seltags as usize] = ui & TAG_MASK;
     }
     state.arrange(Some(state.selmon));
 }
@@ -921,14 +941,12 @@ unsafe extern "C" fn view(state: &mut GmuxState, arg: &Arg) {
 unsafe extern "C" fn killclient(state: &mut GmuxState, _arg: &Arg) {
     let selmon_idx = state.selmon;
     if let Some(sel_idx) = state.mons[selmon_idx].sel {
-        let sel_client_win = state.mons[selmon_idx].clients[sel_idx].win;
-        let sel_client_tags = state.mons[selmon_idx].clients[sel_idx].tags;
-        let sel_client = Client { win: sel_client_win, tags: sel_client_tags, ..state.mons[selmon_idx].clients[sel_idx] };
-        if !sendevent(state, &sel_client, state.wmatom[WM::Delete as usize]) {
+        let client_to_kill = state.mons[selmon_idx].clients[sel_idx].clone();
+        if !sendevent(state, &client_to_kill, state.wmatom[WM::Delete as usize]) {
             state.xwrapper.grab_server();
             state.xwrapper.set_error_handler(Some(xerror_dummy));
             state.xwrapper.set_close_down_mode(xlib::DestroyAll);
-            state.xwrapper.kill_client(sel_client.win);
+            state.xwrapper.kill_client(client_to_kill.win);
             state.xwrapper.sync(false);
             state.xwrapper.set_error_handler(Some(xerror));
             state.xwrapper.ungrab_server();
@@ -959,23 +977,20 @@ fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
 
 
 unsafe extern "C" fn setlayout(state: &mut GmuxState, arg: &Arg) {
-    let v_ptr = unsafe { arg.v.0 };
     let selmon_idx = state.selmon;
-    if v_ptr.is_null() {
-        state.mons[selmon_idx].sellt ^= 1;
-    } else {
-        let sellt = state.mons[selmon_idx].sellt as usize;
-        state.mons[selmon_idx].lt[sellt] = v_ptr as *const Layout;
+    match arg {
+        Arg::Layout(l) => {
+            let sellt = state.mons[selmon_idx].sellt as usize;
+            state.mons[selmon_idx].lt[sellt] = l;
+        }
+        Arg::None => {
+            state.mons[selmon_idx].sellt ^= 1;
+        }
+        _ => return,
     }
     let selmon = &mut state.mons[selmon_idx];
-    let symbol = unsafe { CStr::from_ptr((*selmon.lt[selmon.sellt as usize]).symbol.0).to_str().unwrap() };
-    let c_symbol = CString::new(symbol).unwrap();
-    let dest = selmon.ltsymbol.as_mut_ptr();
-    let src = c_symbol.as_ptr();
-    unsafe {
-        std::ptr::copy_nonoverlapping(src, dest, std::cmp::min(15, c_symbol.as_bytes().len()));
-        selmon.ltsymbol[15] = 0;
-    }
+    let symbol = selmon.lt[selmon.sellt as usize].symbol;
+    selmon.ltsymbol = symbol.to_string();
     if selmon.sel.is_some() {
         state.arrange(Some(selmon_idx));
     }
@@ -984,49 +999,79 @@ unsafe extern "C" fn setlayout(state: &mut GmuxState, arg: &Arg) {
 unsafe extern "C" fn togglefloating(_state: &mut GmuxState, _arg: &Arg) {}
 
 unsafe extern "C" fn tag(state: &mut GmuxState, arg: &Arg) {
-    let selmon_idx = state.selmon;
-    if let Some(sel_idx) = state.mons[selmon_idx].sel {
-        if (arg.ui & TAG_MASK) != 0 {
-            state.mons[selmon_idx].clients[sel_idx].tags = arg.ui & TAG_MASK;
-            state.arrange(Some(selmon_idx));
+    if let Arg::UInt(ui) = arg {
+        let selmon_idx = state.selmon;
+        if let Some(sel_idx) = state.mons[selmon_idx].sel {
+            if (*ui & TAG_MASK) != 0 {
+                state.mons[selmon_idx].clients[sel_idx].tags = *ui & TAG_MASK;
+                state.arrange(Some(selmon_idx));
+            }
         }
     }
 }
 
 unsafe extern "C" fn toggleview(state: &mut GmuxState, arg: &Arg) {
-    let selmon = &mut state.mons[state.selmon];
-    let newtags = selmon.tagset[selmon.seltags as usize] ^ (arg.ui & TAG_MASK);
+    if let Arg::UInt(ui) = arg {
+        let selmon = &mut state.mons[state.selmon];
+        let newtags = selmon.tagset[selmon.seltags as usize] ^ (*ui & TAG_MASK);
 
-    if newtags != 0 {
-        selmon.tagset[selmon.seltags as usize] = newtags;
-        state.arrange(Some(state.selmon));
-    }
-}
-
-unsafe extern "C" fn toggletag(state: &mut GmuxState, arg: &Arg) {
-    let selmon_idx = state.selmon;
-    if let Some(sel_idx) = state.mons[selmon_idx].sel {
-        let newtags = state.mons[selmon_idx].clients[sel_idx].tags ^ (arg.ui & TAG_MASK);
         if newtags != 0 {
-            state.mons[selmon_idx].clients[sel_idx].tags = newtags;
-            state.arrange(Some(selmon_idx));
+            selmon.tagset[selmon.seltags as usize] = newtags;
+            state.arrange(Some(state.selmon));
         }
     }
 }
 
-unsafe extern "C" fn focusmon(_state: &mut GmuxState, _arg: &Arg) {}
+unsafe extern "C" fn toggletag(state: &mut GmuxState, arg: &Arg) {
+    if let Arg::UInt(ui) = arg {
+        let selmon_idx = state.selmon;
+        if let Some(sel_idx) = state.mons[selmon_idx].sel {
+            let newtags = state.mons[selmon_idx].clients[sel_idx].tags ^ (*ui & TAG_MASK);
+            if newtags != 0 {
+                state.mons[selmon_idx].clients[sel_idx].tags = newtags;
+                state.arrange(Some(selmon_idx));
+            }
+        }
+    }
+}
 
-unsafe extern "C" fn tagmon(_state: &mut GmuxState, _arg: &Arg) {}
+unsafe extern "C" fn focusmon(state: &mut GmuxState, arg: &Arg) {
+    if let Arg::Int(i) = arg {
+        let mut next_mon_idx;
+        if state.mons.len() <= 1 {
+            return;
+        }
+        if *i > 0 {
+            next_mon_idx = (state.selmon + 1) % state.mons.len();
+        } else {
+            next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
+        }
+        let last_sel = state.mons[next_mon_idx].sel;
+        focus(state, next_mon_idx, last_sel);
+    }
+}
+
+unsafe extern "C" fn tagmon(state: &mut GmuxState, arg: &Arg) {
+    if let Arg::Int(i) = arg {
+        let selmon_idx = state.selmon;
+        if let Some(sel_idx) = state.mons[selmon_idx].sel {
+            let mut next_mon_idx;
+            if state.mons.len() <= 1 {
+                return;
+            }
+            if *i > 0 {
+                next_mon_idx = (state.selmon + 1) % state.mons.len();
+            } else {
+                next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
+            }
+            // send(c, next_mon_idx);
+        }
+    }
+}
 
 unsafe extern "C" fn quit(state: &mut GmuxState, _arg: &Arg) {
     state.running = 0;
 }
-static LAYOUTS: [Layout; 3] = [
-    Layout { symbol: SyncPtr(b"[]=\0".as_ptr() as *const c_char), arrange: Some(tile) },
-    Layout { symbol: SyncPtr(b"><>\0".as_ptr() as *const c_char), arrange: Some(monocle) },
-    Layout { symbol: SyncPtr(b"[M]\0".as_ptr() as *const c_char), arrange: Some(monocle) },
-];
-
 
 unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
@@ -1121,7 +1166,7 @@ fn show_hide(state: &mut GmuxState, mon_idx: usize, stack: &[usize]) {
         let c = &state.mons[mon_idx].clients[c_idx];
         if is_visible(c, &state.mons[c.mon_idx]) {
             state.xwrapper.move_window(c.win, c.x, c.y);
-            if state.mons[c.mon_idx].lt.get(state.mons[c.mon_idx].sellt as usize).is_none()
+            if state.mons[c.mon_idx].lt[state.mons[c.mon_idx].sellt as usize].arrange.is_none()
                 || c.isfloating && !c.isfullscreen
             {
                 unsafe { resize(state, c.mon_idx, c_idx, c.x, c.y, c.w, c.h, false) };
@@ -1138,7 +1183,7 @@ fn show_hide(state: &mut GmuxState, mon_idx: usize, stack: &[usize]) {
 }
 
 
-unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, destroyed: bool) {
+fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, destroyed: bool) {
     let client = if let Some(c) = detach(state, mon_idx, client_idx) {
         c
     } else {
@@ -1156,7 +1201,7 @@ unsafe fn unmanage(state: &mut GmuxState, mon_idx: usize, client_idx: usize, des
 }
 
 
-unsafe fn pop(state: &mut GmuxState, mon_idx: usize, client_idx: usize) {
+fn pop(state: &mut GmuxState, mon_idx: usize, client_idx: usize) {
     if let Some(client) = detach(state, mon_idx, client_idx) {
         let new_c_idx = attach(state, client);
         focus(state, mon_idx, Some(new_c_idx));
@@ -1165,7 +1210,7 @@ unsafe fn pop(state: &mut GmuxState, mon_idx: usize, client_idx: usize) {
 }
 
 
-unsafe fn detach(state: &mut GmuxState, mon_idx: usize, client_idx: usize) -> Option<Client> {
+fn detach(state: &mut GmuxState, mon_idx: usize, client_idx: usize) -> Option<Client> {
     let mon = &mut state.mons[mon_idx];
     if client_idx >= mon.clients.len() {
         return None;
@@ -1193,7 +1238,7 @@ unsafe fn detach(state: &mut GmuxState, mon_idx: usize, client_idx: usize) -> Op
 }
 
 
-unsafe fn attach(state: &mut GmuxState, c: Client) -> usize {
+fn attach(state: &mut GmuxState, c: Client) -> usize {
     let mon_idx = c.mon_idx;
     let mon = &mut state.mons[mon_idx];
 
@@ -1209,12 +1254,12 @@ unsafe fn attach(state: &mut GmuxState, c: Client) -> usize {
 }
 
 
-unsafe fn attachstack(state: &mut GmuxState, mon_idx: usize, c_idx: usize) {
+fn attachstack(state: &mut GmuxState, mon_idx: usize, c_idx: usize) {
     state.mons[mon_idx].stack.insert(0, c_idx);
 }
 
 
-unsafe fn detachstack(state: &mut GmuxState, mon_idx: usize, c_idx: usize) {
+fn detachstack(state: &mut GmuxState, mon_idx: usize, c_idx: usize) {
     let mon = &mut state.mons[mon_idx];
     mon.stack.retain(|&x| x != c_idx);
 }
@@ -1228,7 +1273,7 @@ unsafe extern "C" fn destroy_notify(state: &mut GmuxState, e: *mut xlib::XEvent)
 }
 
 
-unsafe fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
+fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
     let selmon_idx = state.selmon;
 
     if let Some(old_sel_idx) = state.mons[selmon_idx].sel {
@@ -1278,7 +1323,7 @@ unsafe fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
 
 
 #[allow(dead_code)]
-unsafe fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) {
+fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) {
     if c_idx >= state.mons[mon_idx].clients.len() {
         return;
     }
@@ -1307,7 +1352,7 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
     if ev.window == state.mons[state.selmon].barwin.0 {
         let mut i = 0;
         let mut x = 0;
-        let mut arg = Arg { i: 0 };
+        let mut arg = Arg::None;
         let selmon = &state.mons[state.selmon];
 
         for (tag_idx, &tag) in state.tags.iter().enumerate() {
@@ -1321,10 +1366,10 @@ unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
         }
         if i < state.tags.len() {
             _click = Clk::TagBar;
-            arg.ui = 1 << i;
+            arg = Arg::UInt(1 << i);
         } else if ev.x < x + state.blw {
             _click = Clk::LtSymbol;
-        } else if ev.x > selmon.ww - state.xwrapper.text_width(&unsafe { CStr::from_ptr(&state.stext as *const c_char).to_string_lossy() }) as i32 {
+        } else if ev.x > selmon.ww - state.xwrapper.text_width(&state.stext) as i32 {
             _click = Clk::StatusText;
         } else {
             _click = Clk::WinTitle;
@@ -1389,7 +1434,7 @@ unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
 unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowAttributes) {
     let mut client = Client {
         win: Window(w),
-        name: [0; 256],
+        name: String::new(),
         mina: 0.0,
         maxa: 0.0,
         x: wa.x,
@@ -1417,8 +1462,6 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
         neverfocus: false,
         oldstate: false,
         isfullscreen: false,
-        next: std::ptr::null_mut(),
-        snext: std::ptr::null_mut(),
         mon_idx: state.selmon,
     };
     // Assign to currently selected tag set so client is visible
@@ -1429,17 +1472,15 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
     // XGetTransientForHint
     // applyrules(c);
 
-    unsafe {
-        let win_copy = client.win;
-        let c_idx = attach(state, client);
-        attachstack(state, state.selmon, c_idx);
-        // Recalculate tiling/layout with the newly added client
-        state.arrange(Some(state.selmon));
-        let sel_client_idx = state.mons[state.selmon].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
-        let sel_client = &state.mons[state.selmon].clients[sel_client_idx];
-        state.xwrapper.map_window(sel_client.win);
-        focus(state, state.selmon, Some(sel_client_idx));
-    }
+    let win_copy = client.win;
+    let c_idx = attach(state, client);
+    attachstack(state, state.selmon, c_idx);
+    // Recalculate tiling/layout with the newly added client
+    state.arrange(Some(state.selmon));
+    let sel_client_idx = state.mons[state.selmon].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
+    let sel_client = &state.mons[state.selmon].clients[sel_client_idx];
+    state.xwrapper.map_window(sel_client.win);
+    focus(state, state.selmon, Some(sel_client_idx));
 
     // ... More logic to come ...
 }
@@ -1597,29 +1638,10 @@ fn client_width(c: &Client) -> i32 {
     c.w + 2 * c.bw
 }
 
-fn update_client_pointers(state: &mut GmuxState) {
-    for mon_idx in 0..state.mons.len() {
-        let mon = &mut state.mons[mon_idx];
-        if let Some(sel_ptr) = mon.sel {
-            let sel_win = mon.clients[sel_ptr].win;
-            mon.sel = mon.clients.iter().position(|c| c.win == sel_win);
-        }
-
-        let mut new_stack = Vec::new();
-        for &stack_ptr in &mon.stack {
-            let stack_win = mon.clients[stack_ptr].win;
-            if let Some(new_idx) = mon.clients.iter().position(|c| c.win == stack_win) {
-                new_stack.push(new_idx);
-            }
-        }
-        mon.stack = new_stack;
-    }
-}
-
 fn main() {
     println!("Starting gmux...");
     let mut state = GmuxState {
-        stext: [0; 256],
+        stext: String::new(),
         screen: 0,
         sw: 0,
         sh: 0,
@@ -1631,7 +1653,7 @@ fn main() {
         wmatom: [0; WM::Last as usize],
         netatom: [0; Net::Last as usize],
         running: 1,
-        cursor: [null_mut(); Cur::Last as usize],
+        cursor: [CursorId(0); Cur::Last as usize],
         schemes: [SchemeId(0), SchemeId(0)],
         xwrapper: XWrapper::connect().expect("Failed to open display"),
         mons: Vec::new(),
