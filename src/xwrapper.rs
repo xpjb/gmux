@@ -2,6 +2,8 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
+use crate::colour::{ALL_COLOURS, Colour};
+use crate::ivec2::IVec2;
 
 fn die(s: &str) {
     eprintln!("{}", s);
@@ -103,7 +105,6 @@ struct Drw {
     pub root: xlib::Window,
     pub drawable: xlib::Drawable,
     pub gc: xlib::GC,
-    pub scheme: *mut Clr,
     pub fonts: Vec<Fnt>,
 }
 
@@ -124,16 +125,6 @@ impl Drop for Fnt {
 }
 
 type Clr = xft::XftColor;
-
-#[derive(PartialEq, Copy, Clone)]
-enum Scheme {
-    Norm,
-    Sel,
-    Urg,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SchemeId(pub usize);
 
 impl Drw {
     /// Return pixel width of UTF-8 text using the first font in the set.
@@ -175,7 +166,6 @@ impl Drw {
                 root,
                 drawable,
                 gc,
-                scheme: null_mut(),
                 fonts: Vec::new(),
             }
         }
@@ -232,28 +222,6 @@ impl Drw {
         self.fonts.clear();
     }
 
-    pub fn scm_create(&mut self, clr_names: &[&str]) -> *mut Clr {
-        let mut clrs = Vec::with_capacity(clr_names.len());
-        for clr_name in clr_names {
-            let mut clr = unsafe { std::mem::zeroed() };
-            let cstr = CString::new(*clr_name).expect("color name contains NUL");
-            unsafe {
-                if xft::XftColorAllocName(
-                    self.dpy,
-                    xlib::XDefaultVisual(self.dpy, self.screen),
-                    xlib::XDefaultColormap(self.dpy, self.screen),
-                    cstr.as_ptr(),
-                    &mut clr,
-                ) == 0
-                {
-                    die("cannot allocate color");
-                }
-            }
-            clrs.push(clr);
-        }
-        Box::into_raw(clrs.into_boxed_slice()) as *mut Clr
-    }
-
     pub fn font_getexts(&self, font: *mut Fnt, text: &str, len: u32, w: &mut u32, h: &mut u32) {
         unsafe {
             let mut ext = std::mem::zeroed();
@@ -271,15 +239,13 @@ impl Drw {
 
     pub fn text(
         &self,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
+        clr: &mut Clr,
+        tl: IVec2,
+        wh: IVec2,
         lpad: u32,
         text: &str,
-        _invert: bool,
     ) -> i32 {
-        if self.scheme.is_null() || self.fonts.is_empty() {
+        if self.fonts.is_empty() {
             return 0;
         }
         unsafe {
@@ -290,15 +256,15 @@ impl Drw {
                 xlib::XDefaultColormap(self.dpy, self.screen),
             );
             let usedfont = &self.fonts[0];
-            let x = x + lpad as i32;
-            let w = w.saturating_sub(lpad);
+            let x = tl.x + lpad as i32;
+            let w = wh.x.saturating_sub(lpad as _);
 
             xft::XftDrawStringUtf8(
                 d,
-                &mut (*self.scheme.add(Scheme::Sel as usize)),
+                clr,
                 usedfont.xfont,
                 x,
-                y + (h as i32 - ((*usedfont.xfont).ascent + (*usedfont.xfont).descent) as i32) / 2
+                tl.y + (wh.y as i32 - ((*usedfont.xfont).ascent + (*usedfont.xfont).descent) as i32) / 2
                     + (*usedfont.xfont).ascent as i32,
                 text.as_ptr() as *const u8,
                 text.len() as i32,
@@ -309,24 +275,17 @@ impl Drw {
         }
     }
 
-    pub fn rect(&self, _x: i32, _y: i32, _w: u32, _h: u32, _filled: bool, _invert: bool) {
-        if self.scheme.is_null() {
-            return;
-        }
+    pub fn rect(&self, clr: &Clr, tl: IVec2, wh: IVec2, filled: bool) {
         unsafe {
             xlib::XSetForeground(
                 self.dpy,
                 self.gc,
-                if _invert {
-                    (*self.scheme.add(Scheme::Norm as usize)).pixel
-                } else {
-                    (*self.scheme.add(Scheme::Sel as usize)).pixel
-                },
+                clr.pixel
             );
-            if _filled {
-                xlib::XFillRectangle(self.dpy, self.drawable, self.gc, _x, _y, _w, _h);
+            if filled {
+                xlib::XFillRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, wh.x as _, wh.y as _);
             } else {
-                xlib::XDrawRectangle(self.dpy, self.drawable, self.gc, _x, _y, _w - 1, _h - 1);
+                xlib::XDrawRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, (wh.x - 1) as _, (wh.y - 1) as _);
             }
         }
     }
@@ -360,7 +319,7 @@ pub struct KeySpec {
 pub struct XWrapper {
     dpy: *mut xlib::Display,
     drw: Drw,
-    schemes: Vec<*mut Clr>,
+    colors: [Clr; ALL_COLOURS.len()],
     pub atoms: Atoms,
 }
 
@@ -379,13 +338,45 @@ impl XWrapper {
                 let h = unsafe { xlib::XDisplayHeight(dpy, screen) as u32 };
                 let drw = Drw::create(dpy, screen, root, w, h);
                 let atoms = Atoms::new(dpy)?;
-                Ok(Self {
+                let mut wrapper = Self {
                     dpy,
                     drw,
-                    schemes: Vec::new(),
+                    colors: [unsafe { std::mem::zeroed() }; ALL_COLOURS.len()],
                     atoms,
-                })
+                };
+                wrapper.init_colours();
+                Ok(wrapper)
             }
+        }
+    }
+
+    fn init_colours(&mut self) {
+        for (i, colour) in ALL_COLOURS.iter().enumerate() {
+            let rgba = colour.get_colour();
+            let mut clr = unsafe { std::mem::zeroed() };
+            let color_val = (rgba[3] as u32) << 24
+                | (rgba[0] as u32) << 16
+                | (rgba[1] as u32) << 8
+                | (rgba[2] as u32);
+
+            unsafe {
+                if xft::XftColorAllocValue(
+                    self.dpy,
+                    xlib::XDefaultVisual(self.dpy, self.drw.screen),
+                    xlib::XDefaultColormap(self.dpy, self.drw.screen),
+                    &x11::xrender::XRenderColor {
+                        red: ((color_val >> 16) & 0xff) as u16 * 0x101,
+                        green: ((color_val >> 8) & 0xff) as u16 * 0x101,
+                        blue: (color_val & 0xff) as u16 * 0x101,
+                        alpha: ((color_val >> 24) & 0xff) as u16 * 0x101,
+                    },
+                    &mut clr,
+                ) == 0
+                {
+                    die("cannot allocate color");
+                }
+            }
+            self.colors[i] = clr;
         }
     }
 
@@ -399,12 +390,6 @@ impl XWrapper {
         self.drw.fontset_create(font_names)
     }
 
-    pub fn scm_create(&mut self, clr_names: &[&str]) -> SchemeId {
-        let scheme_ptr = self.drw.scm_create(clr_names);
-        self.schemes.push(scheme_ptr);
-        SchemeId(self.schemes.len() - 1)
-    }
-
     pub fn get_font_height(&self) -> u32 {
         if self.drw.fonts.is_empty() {
             0
@@ -413,20 +398,12 @@ impl XWrapper {
         }
     }
 
-    pub fn rect(&mut self, scheme: SchemeId, x: i32, y: i32, w: u32, h: u32, filled: bool, invert: bool) {
-        if let Some(s) = self.schemes.get(scheme.0) {
-            self.drw.scheme = *s;
-            self.drw.rect(x, y, w, h, filled, invert);
-        }
+    pub fn rect(&mut self, color: Colour, tl: IVec2, wh: IVec2, filled: bool) {
+        self.drw.rect(&self.colors[color as usize], tl, wh, filled);
     }
 
-    pub fn text(&mut self, scheme: SchemeId, x: i32, y: i32, w: u32, h: u32, lpad: u32, text: &str, invert: bool) -> i32 {
-        if let Some(s) = self.schemes.get(scheme.0) {
-            self.drw.scheme = *s;
-            self.drw.text(x, y, w, h, lpad, text, invert)
-        } else {
-            0
-        }
+    pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) -> i32 {
+        self.drw.text(&mut self.colors[color as usize], tl, wh, lpad, text)
     }
 
     pub fn text_width(&self, text: &str) -> u32 {
@@ -957,6 +934,17 @@ impl XWrapper {
         } else {
             false
         }
+    }
+
+    pub fn set_window_border(&self, win: Window, color_pixel: u64) {
+        unsafe {
+            xlib::XSetWindowBorder(self.dpy, win.0, color_pixel);
+        }
+    }
+
+    pub fn set_window_border_color(&self, win: Window, color: Colour) {
+        let pixel = self.colors[color as usize].pixel;
+        self.set_window_border(win, pixel);
     }
 }
 

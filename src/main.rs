@@ -5,101 +5,111 @@ use std::ptr::{null_mut};
 use x11::xlib;
 use x11::xft;
 use x11::keysym;
+use crate::ivec2::ivec2;
 
+mod ivec2;
 mod xwrapper;
 mod command;
+mod colour;
 use command::*;
-use xwrapper::{Atom, CursorId, KeySpec, Net, SchemeId, WM, Window, XWrapper, X_CONFIGURE_WINDOW, X_COPY_AREA, X_GRAB_BUTTON, X_GRAB_KEY, X_POLY_FILL_RECTANGLE, X_POLY_SEGMENT, X_POLY_TEXT8, X_SET_INPUT_FOCUS};
+use colour::Colour;
+use xwrapper::{Atom, CursorId, KeySpec, Net, WM, Window, XWrapper, X_CONFIGURE_WINDOW, X_COPY_AREA, X_GRAB_BUTTON, X_GRAB_KEY, X_POLY_FILL_RECTANGLE, X_POLY_SEGMENT, X_POLY_TEXT8, X_SET_INPUT_FOCUS};
 
 /* ========= configurable constants (similar to dwm's config.h) ========= */
 const FONT: &str = "monospace:size=24"; // change size here to scale bar text
 const BORDERPX: i32 = 2;
+const BAR_H_PADDING: u32 = 5; // Horizontal padding for bar elements
 const BROKEN_UTF8: &str = "";
 // ======================================================================
+
 
 fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     let is_selmon = state.selmon == mon_idx;
     let mon = &state.mons[mon_idx];
-    let ww = mon.ww;
-    let bh = state.bh;
+    let bar_wh = ivec2(mon.ww, state.bh);
     let barwin = mon.barwin;
-    let ltsymbol = &mon.ltsymbol;
-    let clients = &mon.clients;
-    let sel = mon.sel;
-    let scheme_norm = state.schemes[0];
-    let scheme_sel = state.schemes[1];
+    let mut pos = ivec2(0, 0);
 
-    let mut x = 0;
-    let mut w = 0;
-    let mut tw = 0;
+    // --- 1. Clear the entire bar with the default background ---
+    state.xwrapper.rect(Colour::BarBackground, pos, bar_wh, true);
 
-    state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
+    // --- 2. Render Left-aligned elements (Layout Symbol, Tags) ---
 
-    if is_selmon {
-        let status = &state.stext;
-        tw = state.xwrapper.text(scheme_norm, ww as i32 - tw, 0, 0, 0, 0, status, false)
-            + state.xwrapper.get_font_height() as i32;
-    }
-
+    // Draw tags
     let mut urg: u32 = 0;
-    for c in clients {
+    for c in &mon.clients {
         urg |= c.tags;
     }
-    state.xwrapper.rect(scheme_norm, 0, 0, ww as u32, bh as u32, true, true);
-
-    let ltsymbol_str = &mon.ltsymbol;
-    if !ltsymbol_str.is_empty() {
-        w = state.xwrapper.text(scheme_norm, 0, 0, 0, 0, 0, ltsymbol_str, false);
-        state.xwrapper.rect(scheme_norm, x, 0, w as u32, bh as u32, true, true);
-        state.xwrapper.text(scheme_norm, x, 0, w as u32, bh as u32, 0, ltsymbol_str, false);
-        x = w;
-    }
-
     for i in 0..state.tags.len() {
-        let mut occupied = false;
-        for c in clients {
-            if (c.tags & (1 << i)) != 0 {
-                occupied = true;
-                break;
-            }
-        }
-        w = state.xwrapper.text_width(state.tags[i]) as i32;
-        let scheme = if mon.tagset[mon.seltags as usize] & 1 << i != 0 {
-            scheme_sel
+        let tag = state.tags[i];
+        
+        let w = state.xwrapper.text_width(tag) + (BAR_H_PADDING * 2);
+        
+        let (bg_col, fg_col) = if (mon.tagset[mon.seltags as usize] & 1 << i) != 0 {
+            (Colour::BarForeground, Colour::TextNormal)
         } else {
-            scheme_norm
+            (Colour::BarBackground, Colour::TextQuiet)
         };
-        state.xwrapper.rect(scheme, x, 0, w as u32, bh as u32, true, true);
-        if urg & (1 << i) != 0 {
-            state.xwrapper.rect(scheme, x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, true);
-        }
-        state.xwrapper.text(scheme, x, 0, w as u32, bh as u32, 0, state.tags[i], false);
-        unsafe {
-            if let Some(s_idx) = mon.sel {
-                let sel_client = &mon.clients[s_idx];
-                if (sel_client.tags & (1 << i)) != 0 {
-                    state.xwrapper.rect(scheme_sel, x + 1, 1, (w - 2) as u32, (bh - 2) as u32, false, false);
-                }
-            }
-        }
-        x += w;
-    }
 
-    w = ww - tw;
-    unsafe {
+        let tag_wh = ivec2(w as _, state.bh);
+        state.xwrapper.rect(bg_col, pos, tag_wh, true);
+
+        // Draw indicator for urgent windows on this tag
+        if (urg & (1 << i)) != 0 {
+            state.xwrapper.rect(Colour::WindowActive, pos + ivec2(1, 0), tag_wh - ivec2(2, 2), false);
+        }
+        
+        // Draw indicator for the tag of the currently selected client
         if let Some(s_idx) = mon.sel {
-            let sel_client = &mon.clients[s_idx];
-            let name = &sel_client.name;
-            state.xwrapper.text(scheme_sel, x, 0, w as u32, bh as u32, 0, name, false);
-            if sel_client.isfloating {
-                state.xwrapper.rect(scheme_sel, x + 5, 5, (w - 10) as u32, (bh - 2) as u32, false, false);
+            if (mon.clients[s_idx].tags & (1 << i)) != 0 {
+                 state.xwrapper.rect(Colour::BarForeground, pos + ivec2(1, 0), tag_wh - ivec2(2, 2), false);
             }
-        } else {
-            state.xwrapper.rect(scheme_norm, x, 0, w as u32, bh as u32, true, true);
         }
-    }
 
-    state.xwrapper.map_drawable(barwin, 0, 0, ww as u32, bh as u32);
+        state.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
+        pos.x += w as i32;
+    }
+    let left_width = pos.x;
+
+    // // --- 3. Render Right-aligned elements (Status Text) ---
+    // let mut right_x = ww;
+    // if is_selmon {
+    //     let status = &state.stext;
+    //     if !status.is_empty() {
+    //         w = state.xwrapper.text_width(status) + (BAR_H_PADDING * 2);
+    //         right_x -= w as i32;
+    //         state.xwrapper.text(scheme_norm, right_x, 0, w as u32, bh as u32, BAR_H_PADDING, status, false);
+    //     }
+    // }
+    // let right_width = ww - right_x;
+
+    // // --- 4. Render Center element (Selected Client Title) ---
+    // let center_x = left_width;
+    // let center_w = ww - left_width as i32 - right_width;
+
+    // if center_w > 0 {
+    //     if let Some(s_idx) = mon.sel {
+    //         let sel_client = &mon.clients[s_idx];
+    //         let name = &sel_client.name;
+            
+    //         // Draw background for the title area
+    //         state.xwrapper.rect(scheme_sel, center_x as i32, 0, center_w as u32, bh as u32, true, true);
+            
+    //         // Draw floating indicator if necessary
+    //         if sel_client.isfloating {
+    //             let indicator_size = (bh / 2) as u32;
+    //             let indicator_x = center_x + BAR_H_PADDING;
+    //             let indicator_y = (bh - indicator_size as i32) / 2;
+    //             state.xwrapper.rect(scheme_norm, indicator_x as i32, indicator_y, indicator_size, indicator_size, false, true);
+    //         }
+
+    //         // Draw the title text, padded
+    //         state.xwrapper.text(scheme_sel, center_x as i32, 0, center_w as u32, bh as u32, BAR_H_PADDING, name, false);
+    //     }
+    // }
+
+    // --- 5. Map the drawing buffer to the screen ---
+    state.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
 }
 
 
@@ -528,7 +538,6 @@ struct GmuxState {
     numlockmask: c_uint,
     running: c_int,
     cursor: [CursorId; Cur::Last as usize],
-    schemes: [SchemeId; 2],
     xwrapper: XWrapper,
     mons: Vec<Monitor>,
     selmon: usize,
@@ -652,14 +661,6 @@ fn setup(state: &mut GmuxState) {
             state.bh = h + 2;
             state.lrpad = h + 2;
         }
-
-        // color arrays are [ColFg, ColBg, ColBorder] following dwm
-        let colors = &[
-            &["#bbbbbb", "#222222", "#444444"], // SchemeNorm
-            &["#eeeeee", "#005577", "#005577"], // SchemeSel
-        ];
-        state.schemes[0] = state.xwrapper.scm_create(colors[0]);
-        state.schemes[1] = state.xwrapper.scm_create(colors[1]);
 
         // initialise status text sample
         state.stext = "gmux".to_string();
@@ -1106,7 +1107,7 @@ fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
         state
             .xwrapper
             .grab_keys(c_win, state.numlockmask, &key_specs);
-        // XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
+        state.xwrapper.set_window_border_color(c_win, Colour::WindowActive);
         state
             .xwrapper
             .set_input_focus(c_win, xlib::RevertToPointerRoot);
@@ -1130,7 +1131,7 @@ fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) 
     let c_win = state.mons[mon_idx].clients[c_idx].win;
     grabbuttons(state, mon_idx, c_idx, false);
     state.xwrapper.ungrab_keys(c_win);
-    // XSetWindowBorder(dpy, c->win, scheme[SchemeNorm][ColBorder].pixel);
+    state.xwrapper.set_window_border_color(c_win, Colour::WindowInactive);
     if setfocus {
         state
             .xwrapper
@@ -1375,7 +1376,6 @@ fn main() {
         numlockmask: 0,
         running: 1,
         cursor: [CursorId(0); Cur::Last as usize],
-        schemes: [SchemeId(0), SchemeId(0)],
         xwrapper: XWrapper::connect().expect("Failed to open display"),
         mons: Vec::new(),
         selmon: 0,
