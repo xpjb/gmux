@@ -21,31 +21,38 @@ const BORDERPX: i32 = 2;
 const BAR_H_PADDING: u32 = 5; // Horizontal padding for bar elements
 const BROKEN_UTF8: &str = "";
 // ======================================================================
-
-
 fn drawbar(state: &mut GmuxState, mon_idx: usize) {
     let is_selmon = state.selmon == mon_idx;
     let mon = &state.mons[mon_idx];
     let bar_wh = ivec2(mon.ww, state.bh);
     let barwin = mon.barwin;
     let mut pos = ivec2(0, 0);
+    let box_wh = ivec2(state.bh / 6 + 2, state.bh / 6 + 2);
+    let box_xy = ivec2(state.bh / 9, state.bh/9);
 
     // --- 1. Clear the entire bar with the default background ---
     state.xwrapper.rect(Colour::BarBackground, pos, bar_wh, true);
 
     // --- 2. Render Left-aligned elements (Layout Symbol, Tags) ---
 
-    // Draw tags
+    // Calculate occupied and urgent tags
+    let mut occ: u32 = 0;
     let mut urg: u32 = 0;
     for c in &mon.clients {
-        urg |= c.tags;
+        occ |= c.tags;
+        if c.isurgent {
+            urg |= c.tags;
+        }
     }
+
+    // Draw tags
     for i in 0..state.tags.len() {
         let tag = state.tags[i];
+        let selected = (mon.tagset[mon.seltags as usize] & 1 << i) != 0;
         
         let w = state.xwrapper.text_width(tag) + (BAR_H_PADDING * 2);
         
-        let (bg_col, fg_col) = if (mon.tagset[mon.seltags as usize] & 1 << i) != 0 {
+        let (bg_col, fg_col) = if selected {
             (Colour::BarForeground, Colour::TextNormal)
         } else {
             (Colour::BarBackground, Colour::TextQuiet)
@@ -56,15 +63,24 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
 
         // Draw indicator for urgent windows on this tag
         if (urg & (1 << i)) != 0 {
-            state.xwrapper.rect(Colour::WindowActive, pos + ivec2(1, 0), tag_wh - ivec2(2, 2), false);
+            // Note: This draws a border around the entire tag, which differs from
+            // dwm's color inversion. This is fine, but just a heads-up.
+            state.xwrapper.rect(Colour::WindowActive, pos + ivec2(1, 1), tag_wh - ivec2(2, 2), false);
         }
         
-        // Draw indicator for the tag of the currently selected client
-        if let Some(s_idx) = mon.sel {
-            if (mon.clients[s_idx].tags & (1 << i)) != 0 {
-                 state.xwrapper.rect(Colour::BarForeground, pos + ivec2(1, 0), tag_wh - ivec2(2, 2), false);
-            }
+        // --- CORRECTED INDICATOR LOGIC ---
+        // 1. Check if ANY client is on this tag.
+        if (occ & (1 << i)) != 0 {
+            // 2. Determine if the box should be filled. It is filled if the
+            //    currently selected client is on this tag.
+            let is_filled = mon.sel.map_or(false, |sel_idx| {
+                (mon.clients[sel_idx].tags & (1 << i)) != 0
+            });
+
+            // 3. Draw the box using the current scheme's foreground color.
+            state.xwrapper.rect(fg_col, pos + box_xy, box_wh, is_filled);
         }
+        // --- END CORRECTION ---
 
         state.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
         pos.x += w as i32;
@@ -80,18 +96,12 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
 
 
     // Center Text
-    // let s = mon.sel.map(|i| mon.clients.get(i).
-    // Determine background color and text based on whether a client is selected
     let s = mon.sel.and_then(|i| mon.clients.get(i).map(|c| c.name.as_str()));
-
     let (col, text_to_draw) = if let Some(name) = s {
-        // If a client is selected, use foreground color and its name
         (Colour::BarForeground, name)
     } else {
-        // Otherwise, use background color and an empty string
         (Colour::BarBackground, "")
     };
-
 
     let wh_center = (bar_wh - pos) - wh_right.projx();
     state.xwrapper.rect(col, pos, wh_center, true);
