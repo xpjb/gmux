@@ -97,17 +97,6 @@ pub enum Atom {
     Wm(WM),
 }
 
-struct Drw {
-    pub w: c_uint,
-    pub h: c_uint,
-    pub dpy: *mut xlib::Display,
-    pub screen: c_int,
-    pub root: xlib::Window,
-    pub drawable: xlib::Drawable,
-    pub gc: xlib::GC,
-    pub fonts: Vec<Fnt>,
-}
-
 struct Fnt {
     pub dpy: *mut xlib::Display,
     pub h: c_uint,
@@ -126,57 +115,107 @@ impl Drop for Fnt {
 
 type Clr = xft::XftColor;
 
-impl Drw {
-    /// Return pixel width of UTF-8 text using the first font in the set.
-    pub fn text_width(&self, text: &str) -> u32 {
-        if self.fonts.is_empty() {
-            return 0;
-        }
-        unsafe {
-            let mut ext = std::mem::zeroed();
-            let font = &self.fonts[0];
-            xft::XftTextExtentsUtf8(
-                self.dpy,
-                font.xfont,
-                text.as_ptr() as *const u8,
-                text.len() as i32,
-                &mut ext,
-            );
-            ext.xOff as u32
-        }
-    }
+// Newtype wrapper for Window
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window(pub xlib::Window);
 
-    pub fn create(
-        dpy: *mut xlib::Display,
-        screen: c_int,
-        root: xlib::Window,
-        w: c_uint,
-        h: c_uint,
-    ) -> Self {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorId(pub u64);
+
+impl Default for Window {
+    fn default() -> Self {
+        Window(0)
+    }
+}
+
+pub struct KeySpec {
+    pub mask: u32,
+    pub keysym: u32,
+}
+
+pub struct XWrapper {
+    dpy: *mut xlib::Display,
+    pub w: c_uint,
+    pub h: c_uint,
+    pub screen: c_int,
+    pub root: xlib::Window,
+    pub drawable: xlib::Drawable,
+    pub gc: xlib::GC,
+    pub fonts: Vec<Fnt>,
+    colors: [Clr; ALL_COLOURS.len()],
+    pub atoms: Atoms,
+}
+
+impl XWrapper {
+    pub fn connect() -> Result<Self, XError> {
         unsafe {
-            let drawable =
-                xlib::XCreatePixmap(dpy, root, w, h, xlib::XDefaultDepth(dpy, screen) as u32);
-            let gc = xlib::XCreateGC(dpy, root, 0, null_mut());
-            xlib::XSetLineAttributes(dpy, gc, 1, xlib::LineSolid, xlib::CapButt, xlib::JoinMiter);
-            Drw {
-                w,
-                h,
-                dpy,
-                screen,
-                root,
-                drawable,
-                gc,
-                fonts: Vec::new(),
+            // Locale setting should be handled by the application's main function
+            // as it affects the entire process.
+            let dpy = xlib::XOpenDisplay(null_mut());
+            if dpy.is_null() {
+                Err(XError::DisplayOpen)
+            } else {
+                let screen = xlib::XDefaultScreen(dpy);
+                let root = xlib::XRootWindow(dpy, screen);
+                let w = xlib::XDisplayWidth(dpy, screen) as u32;
+                let h = xlib::XDisplayHeight(dpy, screen) as u32;
+                let drawable =
+                    xlib::XCreatePixmap(dpy, root, w, h, xlib::XDefaultDepth(dpy, screen) as u32);
+                let gc = xlib::XCreateGC(dpy, root, 0, null_mut());
+                xlib::XSetLineAttributes(dpy, gc, 1, xlib::LineSolid, xlib::CapButt, xlib::JoinMiter);
+                let atoms = Atoms::new(dpy)?;
+                let mut wrapper = Self {
+                    dpy,
+                    w,
+                    h,
+                    screen,
+                    root,
+                    drawable,
+                    gc,
+                    fonts: Vec::new(),
+                    colors: [std::mem::zeroed(); ALL_COLOURS.len()],
+                    atoms,
+                };
+                wrapper.init_colours();
+                Ok(wrapper)
             }
         }
     }
 
-    pub fn free(&mut self) {
-        unsafe {
-            xlib::XFreePixmap(self.dpy, self.drawable);
-            xlib::XFreeGC(self.dpy, self.gc);
-            self.fontset_free();
+    fn init_colours(&mut self) {
+        for (i, colour) in ALL_COLOURS.iter().enumerate() {
+            let rgba = colour.get_colour();
+            let mut clr = unsafe { std::mem::zeroed() };
+            let color_val = (rgba[3] as u32) << 24
+                | (rgba[0] as u32) << 16
+                | (rgba[1] as u32) << 8
+                | (rgba[2] as u32);
+
+            unsafe {
+                if xft::XftColorAllocValue(
+                    self.dpy,
+                    xlib::XDefaultVisual(self.dpy, self.screen),
+                    xlib::XDefaultColormap(self.dpy, self.screen),
+                    &x11::xrender::XRenderColor {
+                        red: ((color_val >> 16) & 0xff) as u16 * 0x101,
+                        green: ((color_val >> 8) & 0xff) as u16 * 0x101,
+                        blue: (color_val & 0xff) as u16 * 0x101,
+                        alpha: ((color_val >> 24) & 0xff) as u16 * 0x101,
+                    },
+                    &mut clr,
+                ) == 0
+                {
+                    die("cannot allocate color");
+                }
+            }
+            self.colors[i] = clr;
         }
+    }
+
+    /// Provides temporary access to the raw display pointer.
+    /// This should be phased out as more functionality is moved into the wrapper.
+    pub fn dpy(&self) -> *mut xlib::Display {
+        self.dpy
     }
 
     pub fn fontset_create(&mut self, font_names: &[&str]) -> bool {
@@ -218,36 +257,35 @@ impl Drw {
         }
     }
 
-    pub fn fontset_free(&mut self) {
-        self.fonts.clear();
-    }
-
-    pub fn font_getexts(&self, font: *mut Fnt, text: &str, len: u32, w: &mut u32, h: &mut u32) {
-        unsafe {
-            let mut ext = std::mem::zeroed();
-            xft::XftTextExtentsUtf8(
-                self.dpy,
-                (*font).xfont,
-                text.as_ptr() as *const u8,
-                len as i32,
-                &mut ext,
-            );
-            *w = ext.xOff as u32;
-            *h = ((*(*font).xfont).ascent + (*(*font).xfont).descent) as u32;
+    pub fn get_font_height(&self) -> u32 {
+        if self.fonts.is_empty() {
+            0
+        } else {
+            self.fonts[0].h
         }
     }
 
-    pub fn text(
-        &self,
-        clr: &mut Clr,
-        tl: IVec2,
-        wh: IVec2,
-        lpad: u32,
-        text: &str,
-    ) -> i32 {
+    pub fn rect(&mut self, color: Colour, tl: IVec2, wh: IVec2, filled: bool) {
+        let clr = &self.colors[color as usize];
+        unsafe {
+            xlib::XSetForeground(
+                self.dpy,
+                self.gc,
+                clr.pixel
+            );
+            if filled {
+                xlib::XFillRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, wh.x as _, wh.y as _);
+            } else {
+                xlib::XDrawRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, (wh.x - 1) as _, (wh.y - 1) as _);
+            }
+        }
+    }
+
+    pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) -> i32 {
         if self.fonts.is_empty() {
             return 0;
         }
+        let clr = &mut self.colors[color as usize];
         unsafe {
             let d = xft::XftDrawCreate(
                 self.dpy,
@@ -275,143 +313,29 @@ impl Drw {
         }
     }
 
-    pub fn rect(&self, clr: &Clr, tl: IVec2, wh: IVec2, filled: bool) {
-        unsafe {
-            xlib::XSetForeground(
-                self.dpy,
-                self.gc,
-                clr.pixel
-            );
-            if filled {
-                xlib::XFillRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, wh.x as _, wh.y as _);
-            } else {
-                xlib::XDrawRectangle(self.dpy, self.drawable, self.gc, tl.x, tl.y, (wh.x - 1) as _, (wh.y - 1) as _);
-            }
-        }
-    }
-
-    pub fn map(&self, win: xlib::Window, x: i32, y: i32, w: u32, h: u32) {
-        unsafe {
-            xlib::XCopyArea(self.dpy, self.drawable, win, self.gc, x, y, w, h, x, y);
-            xlib::XSync(self.dpy, 0);
-        }
-    }
-}
-
-// Newtype wrapper for Window
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Window(pub xlib::Window);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CursorId(pub u64);
-
-impl Default for Window {
-    fn default() -> Self {
-        Window(0)
-    }
-}
-
-pub struct KeySpec {
-    pub mask: u32,
-    pub keysym: u32,
-}
-
-pub struct XWrapper {
-    dpy: *mut xlib::Display,
-    drw: Drw,
-    colors: [Clr; ALL_COLOURS.len()],
-    pub atoms: Atoms,
-}
-
-impl XWrapper {
-    pub fn connect() -> Result<Self, XError> {
-        unsafe {
-            // Locale setting should be handled by the application's main function
-            // as it affects the entire process.
-            let dpy = xlib::XOpenDisplay(null_mut());
-            if dpy.is_null() {
-                Err(XError::DisplayOpen)
-            } else {
-                let screen = unsafe { xlib::XDefaultScreen(dpy) };
-                let root = unsafe { xlib::XRootWindow(dpy, screen) };
-                let w = unsafe { xlib::XDisplayWidth(dpy, screen) as u32 };
-                let h = unsafe { xlib::XDisplayHeight(dpy, screen) as u32 };
-                let drw = Drw::create(dpy, screen, root, w, h);
-                let atoms = Atoms::new(dpy)?;
-                let mut wrapper = Self {
-                    dpy,
-                    drw,
-                    colors: [unsafe { std::mem::zeroed() }; ALL_COLOURS.len()],
-                    atoms,
-                };
-                wrapper.init_colours();
-                Ok(wrapper)
-            }
-        }
-    }
-
-    fn init_colours(&mut self) {
-        for (i, colour) in ALL_COLOURS.iter().enumerate() {
-            let rgba = colour.get_colour();
-            let mut clr = unsafe { std::mem::zeroed() };
-            let color_val = (rgba[3] as u32) << 24
-                | (rgba[0] as u32) << 16
-                | (rgba[1] as u32) << 8
-                | (rgba[2] as u32);
-
-            unsafe {
-                if xft::XftColorAllocValue(
-                    self.dpy,
-                    xlib::XDefaultVisual(self.dpy, self.drw.screen),
-                    xlib::XDefaultColormap(self.dpy, self.drw.screen),
-                    &x11::xrender::XRenderColor {
-                        red: ((color_val >> 16) & 0xff) as u16 * 0x101,
-                        green: ((color_val >> 8) & 0xff) as u16 * 0x101,
-                        blue: (color_val & 0xff) as u16 * 0x101,
-                        alpha: ((color_val >> 24) & 0xff) as u16 * 0x101,
-                    },
-                    &mut clr,
-                ) == 0
-                {
-                    die("cannot allocate color");
-                }
-            }
-            self.colors[i] = clr;
-        }
-    }
-
-    /// Provides temporary access to the raw display pointer.
-    /// This should be phased out as more functionality is moved into the wrapper.
-    pub fn dpy(&self) -> *mut xlib::Display {
-        self.dpy
-    }
-
-    pub fn fontset_create(&mut self, font_names: &[&str]) -> bool {
-        self.drw.fontset_create(font_names)
-    }
-
-    pub fn get_font_height(&self) -> u32 {
-        if self.drw.fonts.is_empty() {
-            0
-        } else {
-            self.drw.fonts[0].h
-        }
-    }
-
-    pub fn rect(&mut self, color: Colour, tl: IVec2, wh: IVec2, filled: bool) {
-        self.drw.rect(&self.colors[color as usize], tl, wh, filled);
-    }
-
-    pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) -> i32 {
-        self.drw.text(&mut self.colors[color as usize], tl, wh, lpad, text)
-    }
-
     pub fn text_width(&self, text: &str) -> u32 {
-        self.drw.text_width(text)
+        if self.fonts.is_empty() {
+            return 0;
+        }
+        unsafe {
+            let mut ext = std::mem::zeroed();
+            let font = &self.fonts[0];
+            xft::XftTextExtentsUtf8(
+                self.dpy,
+                font.xfont,
+                text.as_ptr() as *const u8,
+                text.len() as i32,
+                &mut ext,
+            );
+            ext.xOff as u32
+        }
     }
 
     pub fn map_drawable(&mut self, win: Window, x: i32, y: i32, w: u32, h: u32) {
-        self.drw.map(win.0, x, y, w, h);
+        unsafe {
+            xlib::XCopyArea(self.dpy, self.drawable, win.0, self.gc, x, y, w, h, x, y);
+            xlib::XSync(self.dpy, 0);
+        }
     }
 
     pub fn intern_atom(&self, atom_name: &str) -> Result<xlib::Atom, XError> {
@@ -951,6 +875,8 @@ impl XWrapper {
 impl Drop for XWrapper {
     fn drop(&mut self) {
         unsafe {
+            xlib::XFreePixmap(self.dpy, self.drawable);
+            xlib::XFreeGC(self.dpy, self.gc);
             xlib::XCloseDisplay(self.dpy);
         }
     }
