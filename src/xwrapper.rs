@@ -3,7 +3,20 @@ use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 
-use crate::{die, X_CONFIGURE_WINDOW, X_COPY_AREA, X_GRAB_BUTTON, X_GRAB_KEY, X_POLY_FILL_RECTANGLE, X_POLY_SEGMENT, X_POLY_TEXT8, X_SET_INPUT_FOCUS};
+fn die(s: &str) {
+    eprintln!("{}", s);
+    std::process::exit(1);
+}
+
+// From <X11/Xproto.h>
+pub const X_SET_INPUT_FOCUS: u8 = 42;
+pub const X_POLY_TEXT8: u8 = 74;
+pub const X_POLY_FILL_RECTANGLE: u8 = 69;
+pub const X_POLY_SEGMENT: u8 = 66;
+pub const X_CONFIGURE_WINDOW: u8 = 12;
+pub const X_GRAB_BUTTON: u8 = 28;
+pub const X_GRAB_KEY: u8 = 33;
+pub const X_COPY_AREA: u8 = 62;
 
 static mut X_ERROR_OCCURRED: bool = false;
 
@@ -920,6 +933,29 @@ impl XWrapper {
                 }
                 xlib::XConfigureWindow(self.dpy, win.0, (changes) as u32, &mut wc);
             }
+        }
+    }
+
+    pub fn clean_mask(&self, mask: u32) -> u32 {
+        mask & !(xlib::LockMask | xlib::Mod2Mask)
+            & (xlib::ShiftMask
+                | xlib::ControlMask
+                | xlib::Mod1Mask
+                | xlib::Mod3Mask
+                | xlib::Mod4Mask
+                | xlib::Mod5Mask)
+    }
+
+    pub fn send_event(&self, win: Window, proto: xlib::Atom) -> bool {
+        let protocols = self.get_wm_protocols(win);
+        if protocols.contains(&proto) {
+            let mut data = [0; 5];
+            data[0] = proto as i64;
+            data[1] = xlib::CurrentTime as i64;
+            self.send_client_message(win, self.atoms.get(Atom::Wm(WM::Protocols)), data);
+            true
+        } else {
+            false
         }
     }
 }

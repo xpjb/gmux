@@ -9,17 +9,7 @@ use x11::keysym;
 mod xwrapper;
 mod command;
 use command::*;
-use xwrapper::{Atom, CursorId, KeySpec, Net, SchemeId, WM, Window, XWrapper};
-
-// From <X11/Xproto.h>
-pub const X_SET_INPUT_FOCUS: u8 = 42;
-pub const X_POLY_TEXT8: u8 = 74;
-pub const X_POLY_FILL_RECTANGLE: u8 = 69;
-pub const X_POLY_SEGMENT: u8 = 66;
-pub const X_CONFIGURE_WINDOW: u8 = 12;
-pub const X_GRAB_BUTTON: u8 = 28;
-pub const X_GRAB_KEY: u8 = 33;
-pub const X_COPY_AREA: u8 = 62;
+use xwrapper::{Atom, CursorId, KeySpec, Net, SchemeId, WM, Window, XWrapper, X_CONFIGURE_WINDOW, X_COPY_AREA, X_GRAB_BUTTON, X_GRAB_KEY, X_POLY_FILL_RECTANGLE, X_POLY_SEGMENT, X_POLY_TEXT8, X_SET_INPUT_FOCUS};
 
 /* ========= configurable constants (similar to dwm's config.h) ========= */
 const FONT: &str = "monospace:size=24"; // change size here to scale bar text
@@ -296,7 +286,7 @@ impl Action {
                 let selmon_idx = state.selmon;
                 if let Some(sel_idx) = state.mons[selmon_idx].sel {
                     let client_to_kill = state.mons[selmon_idx].clients[sel_idx].clone();
-                    if !sendevent(state, &client_to_kill, state.xwrapper.atoms.get(Atom::Wm(WM::Delete))) {
+                    if !state.xwrapper.send_event(client_to_kill.win, state.xwrapper.atoms.get(Atom::Wm(WM::Delete))) {
                         state.xwrapper.grab_server();
                         state.xwrapper.set_ignore_error_handler();
                         state.xwrapper.set_close_down_mode(xlib::DestroyAll);
@@ -572,7 +562,7 @@ impl GmuxState {
         let mut r = self.selmon;
         let mut area = 0;
         for (i, m) in self.mons.iter().enumerate() {
-            let a = intersect(x, y, w, h, m);
+            let a = intersect(x, y, w, h, m) as i32;
             if a > area {
                 area = a;
                 r = i;
@@ -642,34 +632,6 @@ impl GmuxState {
 /// There's no way to check accesses to destroyed windows, thus those cases are
 /// ignored (especially on UnmapNotify's). Other types of errors call Xlibs
 /// default error handler, which may call exit.
-unsafe extern "C" fn xerror(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
-    let ee_ref = unsafe { &*ee };
-    if ee_ref.error_code == xlib::BadWindow
-        || (ee_ref.request_code == X_SET_INPUT_FOCUS && ee_ref.error_code == xlib::BadMatch)
-        || (ee_ref.request_code == X_POLY_TEXT8 && ee_ref.error_code == xlib::BadDrawable)
-        || (ee_ref.request_code == X_POLY_FILL_RECTANGLE && ee_ref.error_code == xlib::BadDrawable)
-        || (ee_ref.request_code == X_POLY_SEGMENT && ee_ref.error_code == xlib::BadDrawable)
-        || (ee_ref.request_code == X_CONFIGURE_WINDOW && ee_ref.error_code == xlib::BadMatch)
-        || (ee_ref.request_code == X_GRAB_BUTTON && ee_ref.error_code == xlib::BadAccess)
-        || (ee_ref.request_code == X_GRAB_KEY && ee_ref.error_code == xlib::BadAccess)
-        || (ee_ref.request_code == X_COPY_AREA && ee_ref.error_code == xlib::BadDrawable)
-    {
-        return 0;
-    }
-
-    eprintln!(
-        "gmux: fatal error: request code={}, error code={}",
-        ee_ref.request_code, ee_ref.error_code
-    );
-
-    // Call the default error handler which will exit
-    // This is not a direct equivalent, but it's the safest thing to do
-    // without the original xerrorxlib variable.
-    // In a more robust implementation, we might get the default handler and call it.
-    // For now, exiting is the clearest action.
-    die("fatal X error");
-    0 // Unreachable
-}
 
 
 fn setup(state: &mut GmuxState) {
@@ -854,7 +816,7 @@ fn parse_key_press(state: &GmuxState, ev: &xlib::XKeyEvent) -> Option<Action> {
     let key_actions = grabkeys();
     let keysym = unsafe { state.xwrapper.keycode_to_keysym(ev.keycode) } as u32;
     for key in key_actions.iter() {
-        if keysym == key.keysym && clean_mask(key.mask) == clean_mask(ev.state) {
+        if keysym == key.keysym && state.xwrapper.clean_mask(key.mask) == state.xwrapper.clean_mask(ev.state) {
             return Some(key.action);
         }
     }
@@ -895,22 +857,6 @@ const TAGS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 const TAG_MASK: u32 = (1 << TAGS.len()) - 1;
 const LOCK_MASK: u32 = xlib::LockMask;
-
-
-fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
-    let protocols = state.xwrapper.get_wm_protocols(c.win);
-    if protocols.contains(&proto) {
-        let mut data = [0; 5];
-        data[0] = proto as i64;
-        data[1] = xlib::CurrentTime as i64;
-        state
-            .xwrapper
-            .send_client_message(c.win, state.xwrapper.atoms.get(Atom::Wm(WM::Protocols)), data);
-        true
-    } else {
-        false
-    }
-}
 
 
 unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
@@ -1411,12 +1357,6 @@ fn cleanup(state: &mut GmuxState) {
     state.xwrapper.ungrab_key(state.root);
 }
 
-
-fn clean_mask(mask: u32) -> u32 {
-    mask & !(LOCK_MASK | xlib::Mod2Mask) & (xlib::ShiftMask | xlib::ControlMask | xlib::Mod1Mask | xlib::Mod3Mask | xlib::Mod4Mask | xlib::Mod5Mask)
-}
-
-// === NEW HELPERS ===
 
 fn client_width(c: &Client) -> i32 {
     c.w + 2 * c.bw
