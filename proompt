@@ -6,3 +6,12 @@ the action system / function pointers or whatever it is etc
 external commands can just be a shcommand idc lol, well it was execvp
 
 just putting everything in the right order lol
+
+
+noticing a bug where its hovering on one thats on a different tag
+
+- launcher
+- show errors in ze status bar
+- log mode with alt tilde or seomthing
+- dwm-spawn-cwd patch equivalent would be goated, ctrl+shift+enter
+- or alacritty can, or maybe wezterm can

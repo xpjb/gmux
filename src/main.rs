@@ -119,6 +119,19 @@ fn drawbars(state: &mut GmuxState) {
     }
 }
 
+/// Finds a client by its absolute (x, y) coordinates on the screen.
+fn client_at_pos(state: &GmuxState, x: i32, y: i32) -> Option<(usize, usize)> {
+    for (mon_idx, m) in state.mons.iter().enumerate() {
+        for (client_idx, c) in m.clients.iter().enumerate() {
+            // Check only visible clients
+            if is_visible(c, m) && (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
+                return Some((mon_idx, client_idx));
+            }
+        }
+    }
+    None
+}
+
 static LAYOUTS: [Layout; 3] = [
     Layout { symbol: "[]=", arrange: Some(tile) },
     Layout { symbol: "><>", arrange: Some(monocle) },
@@ -1152,19 +1165,28 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
     }
 }
 
-// Focus follows mouse when pointer enters a client window
 unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    println!("enter_notify");
     let ev = unsafe { &*(e as *mut xlib::XCrossingEvent) };
-    // ignore non-normal or inferior events (same filtering as dwm)
-    if (ev.mode != xlib::NotifyNormal as i32) || ev.detail == xlib::NotifyInferior as i32 {
+
+    // Ignore non-normal or inferior events (same filtering as dwm)
+    if (ev.mode != xlib::NotifyNormal as i32 || ev.detail == xlib::NotifyInferior as i32)
+        && ev.window != state.root.0
+    {
+        println!("enter_notify mode");
         return;
     }
-    // when entering root, ignore; bar handled elsewhere
-    if ev.window == state.root.0 {
-        return;
-    }
-    if let Some((mon_idx, client_idx)) = wintoclient_idx(state, ev.window) {
+
+    // First, try to find the client by the event's window ID.
+    // If that fails, it might be a root window event, so find the client by cursor position.
+    let client_info = wintoclient_idx(state, ev.window)
+        .or_else(|| client_at_pos(state, ev.x_root, ev.y_root));
+
+    if let Some((mon_idx, client_idx)) = client_info {
+        println!("enter_notify client found");
+        // Check if the found client is already selected on its monitor
         if Some(client_idx) != state.mons[mon_idx].sel {
+            println!("enter_notify focusing new client");
             focus(state, mon_idx, Some(client_idx));
         }
     }
@@ -1231,6 +1253,12 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
     state.arrange(Some(state.selmon));
     let sel_client_idx = state.mons[state.selmon].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
     let sel_client = &state.mons[state.selmon].clients[sel_client_idx];
+    
+    state.xwrapper.select_input(
+        sel_client.win,
+        xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask
+    );
+
     state.xwrapper.map_window(sel_client.win);
     focus(state, state.selmon, Some(sel_client_idx));
 
@@ -1295,11 +1323,9 @@ unsafe fn resize(
     );
 }
 
-
 fn is_visible(c: &Client, m: &Monitor) -> bool {
     (c.tags & m.tagset[m.seltags as usize]) != 0
 }
-
 
 fn scan(state: &mut GmuxState) {
     if let Ok((_, _, wins)) = state.xwrapper.query_tree(state.root) {
@@ -1327,9 +1353,7 @@ fn run(state: &mut GmuxState) {
                         action.execute(state);
                     }
                 }
-                xlib::ButtonPress => {
-                    unsafe { buttonpress(state, &mut ev) };
-                }
+                xlib::ButtonPress => unsafe { buttonpress(state, &mut ev) },
                 xlib::MotionNotify => unsafe { motionnotify(state, &mut ev) },
                 xlib::MapRequest => unsafe { maprequest(state, &mut ev) },
                 xlib::DestroyNotify => unsafe { destroy_notify(state, &mut ev) },
