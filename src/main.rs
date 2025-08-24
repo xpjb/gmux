@@ -140,54 +140,292 @@ enum Cur {
     Move,
     Last,
 }
-#[derive(PartialEq, Copy, Clone)]
-enum Clk {
-    TagBar,
-    LtSymbol,
-    StatusText,
-    WinTitle,
-    ClientWin,
-    RootWin,
-    Last,
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Spawn(&'static Command),
+    ToggleBar,
+    FocusStack(i32),
+    IncNMaster(i32),
+    SetMFact(f32),
+    Zoom,
+    ViewTag(u32, Option<usize>),
+    ViewPrevTag,
+    KillClient,
+    SetLayout(&'static Layout),
+    ToggleLayout(Option<usize>),
+    ToggleFloating,
+    Tag(u32),
+    FocusMon(i32),
+    TagMon(i32),
+    Quit,
+    ToggleView(u32),
+    ToggleTag(u32),
+    FocusClient(usize, usize),
 }
+
+impl Action {
+    fn execute(&self, state: &mut GmuxState) {
+        match self {
+            Action::Spawn(cmd) => {
+                if unsafe { libc::fork() } == 0 {
+                    unsafe {
+                        libc::setsid();
+                        let shell = CString::new("/bin/sh").unwrap();
+                        let c_flag = CString::new("-c").unwrap();
+                        let cmd_str = CString::new(cmd.str()).unwrap();
+                        libc::execlp(
+                            shell.as_ptr(),
+                            shell.as_ptr(),
+                            c_flag.as_ptr(),
+                            cmd_str.as_ptr(),
+                            null_mut::<c_char>(),
+                        );
+                    }
+                }
+            }
+            Action::ToggleBar => {
+                let selmon_idx = state.selmon;
+                let selmon = &mut state.mons[selmon_idx];
+                selmon.showbar = !selmon.showbar;
+                state.arrange(Some(selmon_idx));
+            }
+            Action::FocusStack(i) => {
+                let selmon_idx = state.selmon;
+                let selmon = &state.mons[selmon_idx];
+                if selmon.sel.is_none() {
+                    return;
+                }
+                let sel_idx = selmon.sel.unwrap();
+                let c_idx: usize;
+
+                let visible_clients_indices: Vec<usize> = selmon.clients.iter().enumerate()
+                    .filter(|(_, c)| is_visible(c, selmon))
+                    .map(|(i, _)| i)
+                    .collect();
+                if visible_clients_indices.is_empty() {
+                    return;
+                }
+
+                if let Some(pos) = visible_clients_indices.iter().position(|&i| i == sel_idx) {
+                    c_idx = if *i > 0 {
+                        visible_clients_indices[(pos + 1) % visible_clients_indices.len()]
+                    } else {
+                        visible_clients_indices[(pos + visible_clients_indices.len() - 1) % visible_clients_indices.len()]
+                    };
+                } else {
+                    c_idx = visible_clients_indices[0];
+                }
+
+                if c_idx < selmon.clients.len() {
+                    focus(state, selmon_idx, Some(c_idx));
+                    state.restack(selmon_idx);
+                }
+            }
+            Action::IncNMaster(i) => {
+                let selmon_idx = state.selmon;
+                let selmon = &mut state.mons[selmon_idx];
+                selmon.nmaster = std::cmp::max(selmon.nmaster + i, 0);
+                state.arrange(Some(selmon_idx));
+            }
+            Action::SetMFact(f) => {
+                let selmon_idx = state.selmon;
+                let selmon = &mut state.mons[selmon_idx];
+                if selmon.lt[selmon.sellt as usize].arrange.is_none() {
+                    return;
+                }
+                let new_f = if *f < 1.0 {
+                    *f + selmon.mfact
+                } else {
+                    *f - 1.0
+                };
+                if new_f < 0.05 || new_f > 0.95 {
+                    return;
+                }
+                selmon.mfact = new_f;
+                state.arrange(Some(selmon_idx));
+            }
+            Action::Zoom => {
+                let selmon_idx = state.selmon;
+                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                    let c = &state.mons[selmon_idx].clients[sel_idx];
+                    if state.mons[selmon_idx].lt[state.mons[selmon_idx].sellt as usize].arrange.is_none() || c.isfloating {
+                        return;
+                    }
+
+                    let tiled_clients_indices: Vec<usize> = state.mons[selmon_idx].clients.iter().enumerate()
+                        .filter(|(_, cl)| !cl.isfloating && is_visible(cl, &state.mons[selmon_idx]))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if let Some(pos) = tiled_clients_indices.iter().position(|&i| i == sel_idx) {
+                        if pos == 0 {
+                            if tiled_clients_indices.len() > 1 {
+                                pop(state, selmon_idx, tiled_clients_indices[1]);
+                            }
+                        } else {
+                            pop(state, selmon_idx, sel_idx);
+                        }
+                    }
+                }
+            }
+            Action::ViewTag(ui, opt_mon_idx) => {
+                let mon_idx = match opt_mon_idx {
+                    Some(idx) => {
+                        if *idx != state.selmon {
+                            let last_sel = state.mons[*idx].sel;
+                            focus(state, *idx, last_sel);
+                        }
+                        *idx
+                    },
+                    None => state.selmon
+                };
+
+                let mon = &mut state.mons[mon_idx];
+                if (*ui & TAG_MASK) != 0 {
+                    mon.seltags = 0;
+                    mon.tagset[mon.seltags as usize] = *ui & TAG_MASK;
+                }
+                state.arrange(Some(mon_idx));
+            }
+            Action::ViewPrevTag => {
+                let selmon = &mut state.mons[state.selmon];
+                selmon.seltags = (selmon.seltags + 1) % 2;
+                state.arrange(Some(state.selmon));
+            }
+            Action::KillClient => {
+                let selmon_idx = state.selmon;
+                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                    let client_to_kill = state.mons[selmon_idx].clients[sel_idx].clone();
+                    if !sendevent(state, &client_to_kill, state.xwrapper.atoms.get(Atom::Wm(WM::Delete))) {
+                        state.xwrapper.grab_server();
+                        state.xwrapper.set_ignore_error_handler();
+                        state.xwrapper.set_close_down_mode(xlib::DestroyAll);
+                        state.xwrapper.kill_client(client_to_kill.win);
+                        state.xwrapper.sync(false);
+                        state.xwrapper.set_default_error_handler();
+                        state.xwrapper.ungrab_server();
+                    }
+                }
+            }
+            Action::SetLayout(l) => {
+                let selmon_idx = state.selmon;
+                let sellt = state.mons[selmon_idx].sellt as usize;
+                state.mons[selmon_idx].lt[sellt] = l;
+                let selmon = &mut state.mons[selmon_idx];
+                let symbol = selmon.lt[selmon.sellt as usize].symbol;
+                selmon.ltsymbol = symbol.to_string();
+                if selmon.sel.is_some() {
+                    state.arrange(Some(selmon_idx));
+                }
+            }
+            Action::ToggleLayout(opt_mon_idx) => {
+                let mon_idx = match opt_mon_idx {
+                    Some(idx) => {
+                        if *idx != state.selmon {
+                            let last_sel = state.mons[*idx].sel;
+                            focus(state, *idx, last_sel);
+                        }
+                        *idx
+                    },
+                    None => state.selmon
+                };
+                let mon = &mut state.mons[mon_idx];
+                mon.sellt ^= 1;
+                let symbol = mon.lt[mon.sellt as usize].symbol;
+                mon.ltsymbol = symbol.to_string();
+                if mon.sel.is_some() {
+                    state.arrange(Some(mon_idx));
+                }
+            }
+            Action::ToggleFloating => {
+                let selmon_idx = state.selmon;
+                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                    let client = &mut state.mons[selmon_idx].clients[sel_idx];
+                    client.isfloating = !client.isfloating;
+                    // arrange(selmon);
+                }
+            }
+            Action::Tag(ui) => {
+                 let selmon_idx = state.selmon;
+                 if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                     if (*ui & TAG_MASK) != 0 {
+                         state.mons[selmon_idx].clients[sel_idx].tags = *ui & TAG_MASK;
+                         state.arrange(Some(selmon_idx));
+                     }
+                 }
+            }
+            Action::FocusMon(i) => {
+                let mut next_mon_idx;
+                if state.mons.len() <= 1 {
+                    return;
+                }
+                if *i > 0 {
+                    next_mon_idx = (state.selmon + 1) % state.mons.len();
+                } else {
+                    next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
+                }
+                let last_sel = state.mons[next_mon_idx].sel;
+                focus(state, next_mon_idx, last_sel);
+            }
+            Action::TagMon(i) => {
+                let selmon_idx = state.selmon;
+                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                    let mut next_mon_idx;
+                    if state.mons.len() <= 1 {
+                        return;
+                    }
+                    if *i > 0 {
+                        next_mon_idx = (state.selmon + 1) % state.mons.len();
+                    } else {
+                        next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
+                    }
+                    // TODO: send client to monitor
+                }
+            }
+            Action::Quit => {
+                state.running = 0;
+            }
+            Action::ToggleView(ui) => {
+                let selmon = &mut state.mons[state.selmon];
+                let newtags = selmon.tagset[selmon.seltags as usize] ^ (*ui & TAG_MASK);
+
+                if newtags != 0 {
+                    selmon.tagset[selmon.seltags as usize] = newtags;
+                    state.arrange(Some(state.selmon));
+                }
+            }
+            Action::ToggleTag(ui) => {
+                let selmon_idx = state.selmon;
+                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                    let newtags = state.mons[selmon_idx].clients[sel_idx].tags ^ (*ui & TAG_MASK);
+                    if newtags != 0 {
+                        state.mons[selmon_idx].clients[sel_idx].tags = newtags;
+                        state.arrange(Some(selmon_idx));
+                    }
+                }
+            }
+            Action::FocusClient(mon_idx, client_idx) => {
+                focus(state, *mon_idx, Some(*client_idx));
+                state.restack(state.selmon);
+                state.xwrapper.allow_events(xlib::ReplayPointer);
+            }
+        }
+    }
+}
+
 
 // Structs
-
-#[derive(Clone, Copy)]
-enum Arg {
-    Int(i32),
-    UInt(u32),
-    Float(f32),
-    Layout(&'static Layout),
-    Command(&'static Command),
-    None,
-}
-
-
-struct Button {
-    click: Clk,
-    mask: c_uint,
-    button: c_uint,
-    func: unsafe extern "C" fn(arg: &Arg),
-    arg: Arg,
-}
 
 #[derive(Debug, Clone)]
 struct Monitor {
     ltsymbol: String,
     mfact: f32,
     nmaster: i32,
-    
     num: i32,
-    
     by: i32,
-    
     mx: i32,
-    
     my: i32,
-    
     mw: i32,
-    
     mh: i32,
     wx: i32,
     wy: i32,
@@ -196,9 +434,7 @@ struct Monitor {
     seltags: u32,
     sellt: u32,
     tagset: [u32; 2],
-    
     showbar: bool,
-    
     topbar: bool,
     clients: Vec<Client>,
     sel: Option<usize>,
@@ -239,11 +475,8 @@ impl Default for Monitor {
 
 #[derive(Debug, Clone)]
 struct Client {
-    
     name: String,
-    
     mina: f32,
-    
     maxa: f32,
     x: i32,
     y: i32,
@@ -253,48 +486,33 @@ struct Client {
     oldy: i32,
     oldw: i32,
     oldh: i32,
-    
     basew: i32,
-    
     baseh: i32,
-    
     incw: i32,
-    
     inch: i32,
-    
     maxw: i32,
-    
     maxh: i32,
-    
     minw: i32,
-    
     minh: i32,
     bw: i32,
-    
     oldbw: i32,
     tags: u32,
-    
     isfixed: bool,
     isfloating: bool,
     isurgent: bool,
-    
     neverfocus: bool,
-    
     oldstate: bool,
-    
     isfullscreen: bool,
     mon_idx: usize,
     win: Window,
 }
 
 
-struct Key {
+struct KeyAction {
     mask: u32,
     keysym: u32,
-    func: unsafe extern "C" fn(&mut GmuxState, &Arg),
-    arg: Arg,
+    action: Action,
 }
-
 
 struct Rule {
     class: *const c_char,
@@ -318,7 +536,6 @@ struct GmuxState {
     blw: c_int,
     lrpad: c_int,
     numlockmask: c_uint,
-    handler: [Option<unsafe extern "C" fn(&mut GmuxState, *mut xlib::XEvent)>; xlib::LASTEvent as usize],
     running: c_int,
     cursor: [CursorId; Cur::Last as usize],
     schemes: [SchemeId; 2],
@@ -332,7 +549,7 @@ struct GmuxState {
 }
 
 impl GmuxState {
-    unsafe fn wintomon(&mut self, w: xlib::Window) -> usize {
+    unsafe fn wintomon(&self, w: xlib::Window) -> usize {
         let wrapped_w = Window(w);
         if wrapped_w == self.root {
             if let Some((x, y)) = self.xwrapper.query_pointer_position() {
@@ -562,8 +779,8 @@ fn setup(state: &mut GmuxState) {
 
         // Update NumLockMask and grab global keys
         state.numlockmask = state.xwrapper.get_numlock_mask();
-        let keys = grabkeys(state);
-        let key_specs: Vec<KeySpec> = keys
+        let key_actions: Vec<KeyAction> = grabkeys();
+        let key_specs: Vec<KeySpec> = key_actions
             .iter()
             .map(|k| KeySpec {
                 mask: k.mask,
@@ -574,13 +791,6 @@ fn setup(state: &mut GmuxState) {
             .xwrapper
             .grab_keys(state.root, state.numlockmask, &key_specs);
 
-        state.handler[xlib::ButtonPress as usize] = Some(buttonpress);
-        state.handler[xlib::MotionNotify as usize] = Some(motionnotify);
-        state.handler[xlib::KeyPress as usize] = Some(keypress_wrapper);
-        state.handler[xlib::MapRequest as usize] = Some(maprequest);
-        state.handler[xlib::DestroyNotify as usize] = Some(destroy_notify);
-        state.handler[xlib::EnterNotify as usize] = Some(enter_notify);
-
         focus(state, 0, None);
     }
 }
@@ -590,33 +800,33 @@ fn die(s: &str) {
     std::process::exit(1);
 }
 
-fn grabkeys(_state: &mut GmuxState) -> Vec<Key> {
-    let mut keys: Vec<Key> = vec![];
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_p, func: spawn, arg: Arg::Command(&Command::Dmenu) });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, func: spawn, arg: Arg::Command(&Command::Terminal) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_b, func: togglebar, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_j, func: focusstack, arg: Arg::Int(1) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_k, func: focusstack, arg: Arg::Int(-1) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_i, func: incnmaster, arg: Arg::Int(1) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_d, func: incnmaster, arg: Arg::Int(-1) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_h, func: setmfact, arg: Arg::Float(-0.05) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_l, func: setmfact, arg: Arg::Float(0.05) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, func: zoom, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, func: view, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, func: killclient, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_t, func: setlayout, arg: Arg::Layout(&LAYOUTS[0]) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_f, func: setlayout, arg: Arg::Layout(&LAYOUTS[1]) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_m, func: setlayout, arg: Arg::Layout(&LAYOUTS[2]) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_space, func: setlayout, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, func: togglefloating, arg: Arg::None });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_0, func: view, arg: Arg::UInt(!0) });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, func: tag, arg: Arg::UInt(!0) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, func: focusmon, arg: Arg::Int(-1) });
-    keys.push(Key { mask: xlib::Mod1Mask, keysym: keysym::XK_period, func: focusmon, arg: Arg::Int(1) });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, func: tagmon, arg: Arg::Int(-1) });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, func: tagmon, arg: Arg::Int(1) });
-    keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, func: quit, arg: Arg::None });
-    keys.push(Key { mask: 0, keysym: keysym::XK_Print, func: spawn, arg: Arg::Command(&Command::Screenshot) });
+fn grabkeys() -> Vec<KeyAction> {
+    let mut keys: Vec<KeyAction> = vec![];
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_p, action: Action::Spawn(&Command::Dmenu) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_Return, action: Action::Spawn(&Command::Terminal) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_b, action: Action::ToggleBar });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_j, action: Action::FocusStack(1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_k, action: Action::FocusStack(-1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_i, action: Action::IncNMaster(1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_d, action: Action::IncNMaster(-1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_h, action: Action::SetMFact(-0.05) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_l, action: Action::SetMFact(0.05) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_Return, action: Action::Zoom });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_Tab, action: Action::ViewPrevTag });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_c, action: Action::KillClient });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_t, action: Action::SetLayout(&LAYOUTS[0]) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_f, action: Action::SetLayout(&LAYOUTS[1]) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_m, action: Action::SetLayout(&LAYOUTS[2]) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_space, action: Action::ToggleLayout(None) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_space, action: Action::ToggleFloating });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_0, action: Action::ViewTag(!0, None) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_0, action: Action::Tag(!0) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_comma, action: Action::FocusMon(-1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask, keysym: keysym::XK_period, action: Action::FocusMon(1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_comma, action: Action::TagMon(-1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_period, action: Action::TagMon(1) });
+    keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym: keysym::XK_q, action: Action::Quit });
+    keys.push(KeyAction { mask: 0, keysym: keysym::XK_Print, action: Action::Spawn(&Command::Screenshot) });
 
     const TAGKEYS: &[(u32, u32)] = &[
         (keysym::XK_1, 0),
@@ -631,13 +841,52 @@ fn grabkeys(_state: &mut GmuxState) -> Vec<Key> {
     ];
 
     for &(keysym, tag_idx) in TAGKEYS {
-        keys.push(Key { mask: xlib::Mod1Mask, keysym, func: view, arg: Arg::UInt(1 << tag_idx) });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask, keysym, func: toggleview, arg: Arg::UInt(1 << tag_idx) });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym, func: tag, arg: Arg::UInt(1 << tag_idx) });
-        keys.push(Key { mask: xlib::Mod1Mask | xlib::ControlMask | xlib::ShiftMask, keysym, func: toggletag, arg: Arg::UInt(1 << tag_idx) });
+        keys.push(KeyAction { mask: xlib::Mod1Mask, keysym, action: Action::ViewTag(1 << tag_idx, None) });
+        keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ControlMask, keysym, action: Action::ToggleView(1 << tag_idx) });
+        keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ShiftMask, keysym, action: Action::Tag(1 << tag_idx) });
+        keys.push(KeyAction { mask: xlib::Mod1Mask | xlib::ControlMask | xlib::ShiftMask, keysym, action: Action::ToggleTag(1 << tag_idx) });
     }
 
     keys
+}
+
+fn parse_key_press(state: &GmuxState, ev: &xlib::XKeyEvent) -> Option<Action> {
+    let key_actions = grabkeys();
+    let keysym = unsafe { state.xwrapper.keycode_to_keysym(ev.keycode) } as u32;
+    for key in key_actions.iter() {
+        if keysym == key.keysym && clean_mask(key.mask) == clean_mask(ev.state) {
+            return Some(key.action);
+        }
+    }
+    None
+}
+
+fn parse_button_press(state: &GmuxState, ev: &xlib::XButtonPressedEvent) -> Option<Action> {
+    let mon_idx = unsafe { state.wintomon(ev.window) };
+    let mon = &state.mons[mon_idx];
+
+    if ev.window == mon.barwin.0 {
+        let mut x = 0;
+        let mut w: i32;
+
+        w = state.xwrapper.text_width(&mon.ltsymbol) as i32;
+        if ev.x < x + w {
+            return Some(Action::ToggleLayout(Some(mon_idx)));
+        }
+        x += w;
+
+        for (i, &tag) in state.tags.iter().enumerate() {
+            w = state.xwrapper.text_width(tag) as i32;
+            if ev.x < x + w {
+                return Some(Action::ViewTag(1 << i, Some(mon_idx)));
+            }
+            x += w;
+        }
+        return None;
+    } else if let Some((m_idx, c_idx)) = unsafe { wintoclient_idx(state, ev.window) } {
+        return Some(Action::FocusClient(m_idx, c_idx));
+    }
+    None
 }
 
 // Statically-known strings
@@ -646,155 +895,6 @@ const TAGS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 const TAG_MASK: u32 = (1 << TAGS.len()) - 1;
 const LOCK_MASK: u32 = xlib::LockMask;
-
-
-unsafe extern "C" fn spawn(_state: &mut GmuxState, arg: &Arg) {
-    if let Arg::Command(cmd) = arg {
-        if unsafe { libc::fork() } == 0 {
-            unsafe {
-                libc::setsid();
-                let shell = CString::new("/bin/sh").unwrap();
-                let c_flag = CString::new("-c").unwrap();
-                let cmd_str = CString::new(cmd.str()).unwrap();
-                libc::execlp(
-                    shell.as_ptr(),
-                    shell.as_ptr(),
-                    c_flag.as_ptr(),
-                    cmd_str.as_ptr(),
-                    null_mut::<c_char>(),
-                );
-            }
-        }
-    }
-}
-// stubs for all the functions in the keymap
-
-unsafe extern "C" fn togglebar(_state: &mut GmuxState, _arg: &Arg) {}
-
-unsafe extern "C" fn focusstack(state: &mut GmuxState, arg: &Arg) {
-    let i = if let Arg::Int(i) = arg { *i } else { return };
-    let selmon_idx = state.selmon;
-    let selmon = &mut state.mons[selmon_idx];
-    if selmon.sel.is_none() {
-        return;
-    }
-    let sel_idx = selmon.sel.unwrap();
-    let mut c_idx: usize = 0;
-
-    let visible_clients_indices: Vec<usize> = selmon.clients.iter().enumerate()
-        .filter(|(_, c)| is_visible(c, selmon))
-        .map(|(i, _)| i)
-        .collect();
-    if visible_clients_indices.is_empty() {
-        return;
-    }
-
-    if let Some(pos) = visible_clients_indices.iter().position(|&i| i == sel_idx) {
-        c_idx = if i > 0 {
-            visible_clients_indices[(pos + 1) % visible_clients_indices.len()]
-        } else {
-            visible_clients_indices[(pos + visible_clients_indices.len() - 1) % visible_clients_indices.len()]
-        };
-    } else if !visible_clients_indices.is_empty() {
-        c_idx = visible_clients_indices[0];
-    }
-    
-    if c_idx < selmon.clients.len() {
-        focus(state, selmon_idx, Some(c_idx));
-        state.restack(selmon_idx);
-    }
-}
-
-unsafe extern "C" fn incnmaster(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::Int(i) = arg {
-        let selmon_idx = state.selmon;
-        let selmon = &mut state.mons[selmon_idx];
-        selmon.nmaster = std::cmp::max(selmon.nmaster + i, 0);
-        state.arrange(Some(selmon_idx));
-    }
-}
-
-unsafe extern "C" fn setmfact(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::Float(f) = arg {
-        let selmon_idx = state.selmon;
-        let selmon = &mut state.mons[selmon_idx];
-        if selmon.lt[selmon.sellt as usize].arrange.is_none() {
-            return;
-        }
-        let new_f = if *f < 1.0 {
-            *f + selmon.mfact
-        } else {
-            *f - 1.0
-        };
-        if new_f < 0.05 || new_f > 0.95 {
-            return;
-        }
-        selmon.mfact = new_f;
-        state.arrange(Some(selmon_idx));
-    }
-}
-
-unsafe extern "C" fn zoom(state: &mut GmuxState, _arg: &Arg) {
-    let selmon_idx = state.selmon;
-    if let Some(sel_idx) = state.mons[selmon_idx].sel {
-        let c = &state.mons[selmon_idx].clients[sel_idx];
-        if state.mons[selmon_idx].lt[state.mons[selmon_idx].sellt as usize].arrange.is_none() || c.isfloating {
-            return;
-        }
-
-        let tiled_clients_indices: Vec<usize> = state.mons[selmon_idx].clients.iter().enumerate()
-            .filter(|(_, cl)| !cl.isfloating && is_visible(cl, &state.mons[selmon_idx]))
-            .map(|(i, _)| i)
-            .collect();
-        if let Some(pos) = tiled_clients_indices.iter().position(|&i| i == sel_idx) {
-            if pos == 0 {
-                if tiled_clients_indices.len() > 1 {
-                    pop(state, selmon_idx, tiled_clients_indices[1]);
-                }
-            } else {
-                pop(state, selmon_idx, sel_idx);
-            }
-        }
-    }
-}
-
-unsafe extern "C" fn view(state: &mut GmuxState, arg: &Arg) {
-    let ui = match arg {
-        Arg::UInt(ui) => *ui,
-        Arg::None => {
-            // This case handles the XK_Tab key to switch to the previous tag set.
-            let selmon = &mut state.mons[state.selmon];
-            selmon.seltags = (selmon.seltags + 1) % 2;
-            state.arrange(Some(state.selmon));
-            return;
-        },
-        _ => return,
-    };
-
-    let selmon = &mut state.mons[state.selmon];
-    if (ui & TAG_MASK) != 0 {
-        selmon.seltags = 0;
-        selmon.tagset[selmon.seltags as usize] = ui & TAG_MASK;
-    }
-    state.arrange(Some(state.selmon));
-}
-
-#[allow(dead_code)]
-unsafe extern "C" fn killclient(state: &mut GmuxState, _arg: &Arg) {
-    let selmon_idx = state.selmon;
-    if let Some(sel_idx) = state.mons[selmon_idx].sel {
-        let client_to_kill = state.mons[selmon_idx].clients[sel_idx].clone();
-        if !sendevent(state, &client_to_kill, state.xwrapper.atoms.get(Atom::Wm(WM::Delete))) {
-            state.xwrapper.grab_server();
-            state.xwrapper.set_ignore_error_handler();
-            state.xwrapper.set_close_down_mode(xlib::DestroyAll);
-            state.xwrapper.kill_client(client_to_kill.win);
-            state.xwrapper.sync(false);
-            state.xwrapper.set_default_error_handler();
-            state.xwrapper.ungrab_server();
-        }
-    }
-}
 
 
 fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
@@ -813,102 +913,19 @@ fn sendevent(state: &mut GmuxState, c: &Client, proto: xlib::Atom) -> bool {
 }
 
 
-unsafe extern "C" fn setlayout(state: &mut GmuxState, arg: &Arg) {
-    let selmon_idx = state.selmon;
-    match arg {
-        Arg::Layout(l) => {
-            let sellt = state.mons[selmon_idx].sellt as usize;
-            state.mons[selmon_idx].lt[sellt] = l;
-        }
-        Arg::None => {
-            state.mons[selmon_idx].sellt ^= 1;
-        }
-        _ => return,
+unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    let ev = unsafe { &mut (*(e as *mut xlib::XButtonPressedEvent)) };
+    let mon_idx = unsafe { state.wintomon(ev.window) };
+    if mon_idx != state.selmon {
+        unfocus(state, state.selmon, state.mons[state.selmon].sel.unwrap(), true);
+        state.selmon = mon_idx;
+        focus(state, mon_idx, None);
     }
-    let selmon = &mut state.mons[selmon_idx];
-    let symbol = selmon.lt[selmon.sellt as usize].symbol;
-    selmon.ltsymbol = symbol.to_string();
-    if selmon.sel.is_some() {
-        state.arrange(Some(selmon_idx));
+    if let Some(action) = parse_button_press(state, ev) {
+        action.execute(state);
     }
 }
 
-unsafe extern "C" fn togglefloating(_state: &mut GmuxState, _arg: &Arg) {}
-
-unsafe extern "C" fn tag(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::UInt(ui) = arg {
-        let selmon_idx = state.selmon;
-        if let Some(sel_idx) = state.mons[selmon_idx].sel {
-            if (*ui & TAG_MASK) != 0 {
-                state.mons[selmon_idx].clients[sel_idx].tags = *ui & TAG_MASK;
-                state.arrange(Some(selmon_idx));
-            }
-        }
-    }
-}
-
-unsafe extern "C" fn toggleview(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::UInt(ui) = arg {
-        let selmon = &mut state.mons[state.selmon];
-        let newtags = selmon.tagset[selmon.seltags as usize] ^ (*ui & TAG_MASK);
-
-        if newtags != 0 {
-            selmon.tagset[selmon.seltags as usize] = newtags;
-            state.arrange(Some(state.selmon));
-        }
-    }
-}
-
-unsafe extern "C" fn toggletag(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::UInt(ui) = arg {
-        let selmon_idx = state.selmon;
-        if let Some(sel_idx) = state.mons[selmon_idx].sel {
-            let newtags = state.mons[selmon_idx].clients[sel_idx].tags ^ (*ui & TAG_MASK);
-            if newtags != 0 {
-                state.mons[selmon_idx].clients[sel_idx].tags = newtags;
-                state.arrange(Some(selmon_idx));
-            }
-        }
-    }
-}
-
-unsafe extern "C" fn focusmon(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::Int(i) = arg {
-        let mut next_mon_idx;
-        if state.mons.len() <= 1 {
-            return;
-        }
-        if *i > 0 {
-            next_mon_idx = (state.selmon + 1) % state.mons.len();
-        } else {
-            next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
-        }
-        let last_sel = state.mons[next_mon_idx].sel;
-        focus(state, next_mon_idx, last_sel);
-    }
-}
-
-unsafe extern "C" fn tagmon(state: &mut GmuxState, arg: &Arg) {
-    if let Arg::Int(i) = arg {
-        let selmon_idx = state.selmon;
-        if let Some(sel_idx) = state.mons[selmon_idx].sel {
-            let mut next_mon_idx;
-            if state.mons.len() <= 1 {
-                return;
-            }
-            if *i > 0 {
-                next_mon_idx = (state.selmon + 1) % state.mons.len();
-            } else {
-                next_mon_idx = (state.selmon + state.mons.len() - 1) % state.mons.len();
-            }
-            // send(c, next_mon_idx);
-        }
-    }
-}
-
-unsafe extern "C" fn quit(state: &mut GmuxState, _arg: &Arg) {
-    state.running = 0;
-}
 
 unsafe extern "C" fn tile(state: &mut GmuxState, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
@@ -1132,7 +1149,7 @@ fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
         // detachstack(c);
         // attachstack(c);
         grabbuttons(state, new_mon_idx, idx, true);
-        let keys = grabkeys(state);
+        let keys = grabkeys();
         let key_specs: Vec<KeySpec> = keys
             .iter()
             .map(|k| KeySpec {
@@ -1173,49 +1190,6 @@ fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) 
             .xwrapper
             .set_input_focus(state.root, xlib::RevertToPointerRoot);
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
-    }
-}
-
-
-unsafe extern "C" fn buttonpress(state: &mut GmuxState, e: *mut xlib::XEvent) {
-    let ev = unsafe { &mut (*(e as *mut xlib::XButtonPressedEvent)) };
-    let mut _click = Clk::RootWin;
-    let m = unsafe { state.wintomon(ev.window) };
-    if m != state.selmon {
-        unfocus(state, state.selmon, state.mons[state.selmon].sel.unwrap(), true);
-        state.selmon = m;
-        focus(state, m, None);
-    }
-    if ev.window == state.mons[state.selmon].barwin.0 {
-        let mut i = 0;
-        let mut x = 0;
-        let mut arg = Arg::None;
-        let selmon = &state.mons[state.selmon];
-
-        for (tag_idx, &tag) in state.tags.iter().enumerate() {
-            let w = state.xwrapper.text_width(tag) as i32;
-            x += w as i32;
-            if ev.x > x {
-                i = tag_idx + 1;
-            } else {
-                break;
-            }
-        }
-        if i < state.tags.len() {
-            _click = Clk::TagBar;
-            arg = Arg::UInt(1 << i);
-        } else if ev.x < x + state.blw {
-            _click = Clk::LtSymbol;
-        } else if ev.x > selmon.ww - state.xwrapper.text_width(&state.stext) as i32 {
-            _click = Clk::StatusText;
-        } else {
-            _click = Clk::WinTitle;
-        }
-    } else if let Some((mon_idx, client_idx)) = wintoclient_idx(state, ev.window) {
-        focus(state, mon_idx, Some(client_idx));
-        state.restack(state.selmon);
-        state.xwrapper.allow_events(xlib::ReplayPointer);
-        _click = Clk::ClientWin;
     }
 }
 
@@ -1406,10 +1380,21 @@ fn run(state: &mut GmuxState) {
     while state.running != 0 {
         if let Some(mut ev) = state.xwrapper.next_event() {
             let event_type = unsafe { ev.get_type() };
-            if (event_type as usize) < state.handler.len() {
-                if let Some(h) = state.handler[event_type as usize] {
-                    unsafe { h(state, &mut ev) };
+            match event_type {
+                xlib::KeyPress => {
+                    let kev = unsafe { &*(ev.as_mut() as *mut _ as *mut xlib::XKeyEvent) };
+                    if let Some(action) = parse_key_press(state, kev) {
+                        action.execute(state);
+                    }
                 }
+                xlib::ButtonPress => {
+                    unsafe { buttonpress(state, &mut ev) };
+                }
+                xlib::MotionNotify => unsafe { motionnotify(state, &mut ev) },
+                xlib::MapRequest => unsafe { maprequest(state, &mut ev) },
+                xlib::DestroyNotify => unsafe { destroy_notify(state, &mut ev) },
+                xlib::EnterNotify => unsafe { enter_notify(state, &mut ev) },
+                _ => (),
             }
         }
     }
@@ -1426,25 +1411,6 @@ fn cleanup(state: &mut GmuxState) {
     state.xwrapper.ungrab_key(state.root);
 }
 
-
-unsafe extern "C" fn keypress_wrapper(state: &mut GmuxState, e: *mut xlib::XEvent) {
-    let keys = grabkeys(state);
-    unsafe { keypress(state, &mut *e, keys.as_ptr(), keys.len()) };
-}
-
-
-unsafe extern "C" fn keypress(state: &mut GmuxState, e: &mut xlib::XEvent, keys: *const Key, keys_len: usize) {
-    let ev = unsafe { &*(e as *mut xlib::XEvent as *mut xlib::XKeyEvent) };
-    let keys_slice = unsafe { std::slice::from_raw_parts(keys, keys_len) };
-    let keysym = state.xwrapper.keycode_to_keysym(ev.keycode) as u32;
-    for key in keys_slice.iter() {
-        if keysym == key.keysym
-            && clean_mask(key.mask) == clean_mask(ev.state)
-        {
-            unsafe { (key.func)(state, &key.arg) };
-        }
-    }
-}
 
 fn clean_mask(mask: u32) -> u32 {
     mask & !(LOCK_MASK | xlib::Mod2Mask) & (xlib::ShiftMask | xlib::ControlMask | xlib::Mod1Mask | xlib::Mod3Mask | xlib::Mod4Mask | xlib::Mod5Mask)
@@ -1467,7 +1433,6 @@ fn main() {
         blw: 0,
         lrpad: 0,
         numlockmask: 0,
-        handler: [None; xlib::LASTEvent as usize],
         running: 1,
         cursor: [CursorId(0); Cur::Last as usize],
         schemes: [SchemeId(0), SchemeId(0)],
@@ -1479,8 +1444,6 @@ fn main() {
         xerror: false,
         tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
     };
-    
-    state.handler[xlib::KeyPress as usize] = Some(keypress_wrapper);
     
     unsafe {
         let locale = CString::new("").unwrap();

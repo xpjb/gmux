@@ -1,1 +1,8 @@
-nb, drw module is the only thing, and its probs pretty shit lol, can it mostly be moved into xwrapper or what lol
+is there some kind of trait for window manager?
+
+what about the constants goin into xwrapper?
+
+the action system / function pointers or whatever it is etc
+external commands can just be a shcommand idc lol, well it was execvp
+
+just putting everything in the right order lol
