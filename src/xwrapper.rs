@@ -1,3 +1,4 @@
+use x11::xft::XftDraw;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr::null_mut;
@@ -140,7 +141,8 @@ pub struct XWrapper {
     pub screen: c_int,
     pub root: xlib::Window,
     pub drawable: xlib::Drawable,
-    pub gc: xlib::GC,
+    gc: xlib::GC,
+    xftdraw: *mut XftDraw, // <<< ADDED: Cached XftDraw object
     pub fonts: Vec<Fnt>,
     colors: [Clr; ALL_COLOURS.len()],
     pub atoms: Atoms,
@@ -149,36 +151,51 @@ pub struct XWrapper {
 impl XWrapper {
     pub fn connect() -> Result<Self, XError> {
         unsafe {
-            // Locale setting should be handled by the application's main function
-            // as it affects the entire process.
             let dpy = xlib::XOpenDisplay(null_mut());
             if dpy.is_null() {
-                Err(XError::DisplayOpen)
-            } else {
-                let screen = xlib::XDefaultScreen(dpy);
-                let root = xlib::XRootWindow(dpy, screen);
-                let w = xlib::XDisplayWidth(dpy, screen) as u32;
-                let h = xlib::XDisplayHeight(dpy, screen) as u32;
-                let drawable =
-                    xlib::XCreatePixmap(dpy, root, w, h, xlib::XDefaultDepth(dpy, screen) as u32);
-                let gc = xlib::XCreateGC(dpy, root, 0, null_mut());
-                xlib::XSetLineAttributes(dpy, gc, 1, xlib::LineSolid, xlib::CapButt, xlib::JoinMiter);
-                let atoms = Atoms::new(dpy)?;
-                let mut wrapper = Self {
-                    dpy,
-                    w,
-                    h,
-                    screen,
-                    root,
-                    drawable,
-                    gc,
-                    fonts: Vec::new(),
-                    colors: [std::mem::zeroed(); ALL_COLOURS.len()],
-                    atoms,
-                };
-                wrapper.init_colours();
-                Ok(wrapper)
+                return Err(XError::DisplayOpen);
             }
+
+            let screen = xlib::XDefaultScreen(dpy);
+            let root = xlib::XRootWindow(dpy, screen);
+            let w = xlib::XDisplayWidth(dpy, screen) as u32;
+            let h = xlib::XDisplayHeight(dpy, screen) as u32;
+            
+            // Create the pixmap for double-buffering
+            let drawable = xlib::XCreatePixmap(dpy, root, w, h, xlib::XDefaultDepth(dpy, screen) as u32);
+            
+            // Create the Graphics Context for rectangle drawing
+            let gc = xlib::XCreateGC(dpy, root, 0, null_mut());
+            xlib::XSetLineAttributes(dpy, gc, 1, xlib::LineSolid, xlib::CapButt, xlib::JoinMiter);
+
+            // <<< ADDED: Create the XftDraw object ONCE for our pixmap
+            let xftdraw = xft::XftDrawCreate(
+                dpy,
+                drawable,
+                xlib::XDefaultVisual(dpy, screen),
+                xlib::XDefaultColormap(dpy, screen),
+            );
+            if xftdraw.is_null() {
+                // Handle error appropriately, maybe return an Err
+                die("Failed to create XftDraw");
+            }
+
+            let atoms = Atoms::new(dpy)?;
+            let mut wrapper = Self {
+                dpy,
+                w,
+                h,
+                screen,
+                root,
+                drawable,
+                gc,
+                xftdraw, // <<< ADDED: Store the cached object
+                fonts: Vec::new(),
+                colors: [std::mem::zeroed(); ALL_COLOURS.len()],
+                atoms,
+            };
+            wrapper.init_colours();
+            Ok(wrapper)
         }
     }
 
@@ -281,38 +298,35 @@ impl XWrapper {
         }
     }
 
-    pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) -> i32 {
-        if self.fonts.is_empty() {
-            return 0;
+    // <<< MODIFIED: This function is now much simpler and more efficient
+    pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) {
+        if self.fonts.is_empty() || text.is_empty() {
+            return;
         }
-        let clr = &mut self.colors[color as usize];
+    
         unsafe {
-            let d = xft::XftDrawCreate(
-                self.dpy,
-                self.drawable,
-                xlib::XDefaultVisual(self.dpy, self.screen),
-                xlib::XDefaultColormap(self.dpy, self.screen),
-            );
+            let clr = &mut self.colors[color as usize];
             let usedfont = &self.fonts[0];
+    
+            // Calculate horizontal position with padding
             let x = tl.x + lpad as i32;
-            let w = wh.x.saturating_sub(lpad as _);
-
+    
+            // Calculate vertical position for the text baseline to center it
+            let font_height = (*usedfont.xfont).ascent + (*usedfont.xfont).descent;
+            let y = tl.y + (wh.y - font_height as i32) / 2 + (*usedfont.xfont).ascent as i32;
+    
+            // Draw the string using the cached xftdraw object
             xft::XftDrawStringUtf8(
-                d,
+                self.xftdraw,
                 clr,
                 usedfont.xfont,
                 x,
-                tl.y + (wh.y as i32 - ((*usedfont.xfont).ascent + (*usedfont.xfont).descent) as i32) / 2
-                    + (*usedfont.xfont).ascent as i32,
+                y,
                 text.as_ptr() as *const u8,
                 text.len() as i32,
             );
-
-            xft::XftDrawDestroy(d);
-            x + w as i32
         }
     }
-
     pub fn text_width(&self, text: &str) -> u32 {
         if self.fonts.is_empty() {
             return 0;
@@ -925,9 +939,14 @@ impl XWrapper {
     }
 }
 
+
 impl Drop for XWrapper {
     fn drop(&mut self) {
         unsafe {
+            // <<< ADDED: Destroy the cached XftDraw object
+            if !self.xftdraw.is_null() {
+                xft::XftDrawDestroy(self.xftdraw);
+            }
             xlib::XFreePixmap(self.dpy, self.drawable);
             xlib::XFreeGC(self.dpy, self.gc);
             xlib::XCloseDisplay(self.dpy);
