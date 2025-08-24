@@ -69,44 +69,25 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
         state.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
         pos.x += w as i32;
     }
-    let left_width = pos.x;
 
-    // // --- 3. Render Right-aligned elements (Status Text) ---
-    // let mut right_x = ww;
-    // if is_selmon {
-    //     let status = &state.stext;
-    //     if !status.is_empty() {
-    //         w = state.xwrapper.text_width(status) + (BAR_H_PADDING * 2);
-    //         right_x -= w as i32;
-    //         state.xwrapper.text(scheme_norm, right_x, 0, w as u32, bh as u32, BAR_H_PADDING, status, false);
-    //     }
-    // }
-    // let right_width = ww - right_x;
+    // Right Text
+    let s = "right_text";
+    let w_right = state.xwrapper.text_width(s) + (BAR_H_PADDING * 2);
+    let p_right = ivec2(bar_wh.x - w_right as i32, 0);
+    let wh_right = ivec2(w_right as i32, state.bh);
+    state.xwrapper.rect(Colour::BarBackground, p_right, wh_right, true);
+    state.xwrapper.text(Colour::TextQuiet, p_right, wh_right, BAR_H_PADDING, s);
 
-    // // --- 4. Render Center element (Selected Client Title) ---
-    // let center_x = left_width;
-    // let center_w = ww - left_width as i32 - right_width;
 
-    // if center_w > 0 {
-    //     if let Some(s_idx) = mon.sel {
-    //         let sel_client = &mon.clients[s_idx];
-    //         let name = &sel_client.name;
-            
-    //         // Draw background for the title area
-    //         state.xwrapper.rect(scheme_sel, center_x as i32, 0, center_w as u32, bh as u32, true, true);
-            
-    //         // Draw floating indicator if necessary
-    //         if sel_client.isfloating {
-    //             let indicator_size = (bh / 2) as u32;
-    //             let indicator_x = center_x + BAR_H_PADDING;
-    //             let indicator_y = (bh - indicator_size as i32) / 2;
-    //             state.xwrapper.rect(scheme_norm, indicator_x as i32, indicator_y, indicator_size, indicator_size, false, true);
-    //         }
+    // Center Text
+    // let s = mon.sel.map(|i| mon.clients.get(i).
+    let s = mon.sel.and_then(|i| mon.clients.get(i).map(|c| c.name.as_str()));
+    let s = s.unwrap_or("");
 
-    //         // Draw the title text, padded
-    //         state.xwrapper.text(scheme_sel, center_x as i32, 0, center_w as u32, bh as u32, BAR_H_PADDING, name, false);
-    //     }
-    // }
+
+    let wh_center = (bar_wh - pos) - wh_right.projx();
+    state.xwrapper.rect(Colour::BarForeground, pos, wh_center, true);
+    state.xwrapper.text(Colour::TextNormal, pos, wh_center, BAR_H_PADDING, s);
 
     // --- 5. Map the drawing buffer to the screen ---
     state.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
@@ -1204,6 +1185,30 @@ unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
     }
 }
 
+unsafe extern "C" fn propertynotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
+    let ev = unsafe { &*(e as *mut xlib::XPropertyEvent) };
+
+    // Check if the event is for a window we manage
+    if let Some((mon_idx, client_idx)) = wintoclient_idx(state, ev.window) {
+        let client = &mut state.mons[mon_idx].clients[client_idx];
+
+        // We only care about name changes.
+        // _NET_WM_NAME is the modern, UTF-8 compatible standard.
+        // XA_WM_NAME is the older, legacy standard.
+        if ev.atom == state.xwrapper.atoms.get(Atom::Net(Net::WMName)) || ev.atom == xlib::XA_WM_NAME {
+            // Refetch the window title
+            if let Some(new_name) = state.xwrapper.get_window_title(client.win) {
+                if new_name != client.name {
+                    client.name = new_name;
+                    // Redraw the bar for the monitor this client is on
+                    let mon_idx = client.mon_idx;
+                    drawbar(state, mon_idx); 
+                }
+            }
+        }
+    }
+}
+
 
 unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowAttributes) {
     let mut client = Client {
@@ -1238,18 +1243,70 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
         isfullscreen: false,
         mon_idx: state.selmon,
     };
-    // Assign to currently selected tag set so client is visible
-    client.tags = state.mons[state.selmon].tagset[state.mons[state.selmon].seltags as usize];
-    client.mon_idx = state.selmon;
 
-    // updatetitle(c);
-    // XGetTransientForHint
-    // applyrules(c);
+    // 1. Fetch window title
+    if let Some(name) = state.xwrapper.get_window_title(client.win) {
+        client.name = name;
+    }
+
+    // 2. Handle transient windows
+    let is_transient = if let Some(parent_win) = state.xwrapper.get_transient_for_hint(client.win) {
+        if let Some((mon_idx, client_idx)) = wintoclient_idx(state, parent_win.0) {
+            let parent_client = &state.mons[mon_idx].clients[client_idx];
+            client.mon_idx = parent_client.mon_idx;
+            client.tags = parent_client.tags;
+            client.isfloating = true;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !is_transient {
+        // Assign to currently selected tag set so client is visible
+        client.tags = state.mons[state.selmon].tagset[state.mons[state.selmon].seltags as usize];
+        client.mon_idx = state.selmon;
+    }
+
+    // 3. Process size hints
+    if let Ok(hints) = state.xwrapper.get_wm_normal_hints(client.win) {
+        if hints.flags & xlib::PBaseSize != 0 {
+            client.basew = hints.base_width;
+            client.baseh = hints.base_height;
+        } else if hints.flags & xlib::PMinSize != 0 {
+            client.basew = hints.min_width;
+            client.baseh = hints.min_height;
+        }
+        if hints.flags & xlib::PResizeInc != 0 {
+            client.incw = hints.width_inc;
+            client.inch = hints.height_inc;
+        }
+        if hints.flags & xlib::PMaxSize != 0 {
+            client.maxw = hints.max_width;
+            client.maxh = hints.max_height;
+        }
+        if hints.flags & xlib::PMinSize != 0 {
+            client.minw = hints.min_width;
+            client.minh = hints.min_height;
+        }
+
+        if hints.flags & xlib::PAspect != 0 {
+            client.mina = hints.min_aspect.y as f32 / hints.min_aspect.x as f32;
+            client.maxa = hints.max_aspect.x as f32 / hints.max_aspect.y as f32;
+        }
+
+        if client.maxw > 0 && client.maxh > 0 && client.maxw == client.minw && client.maxh == client.minh {
+            client.isfixed = true;
+            client.isfloating = true;
+        }
+    }
 
     let win_copy = client.win;
     let c_idx = attach(state, client);
     attachstack(state, state.selmon, c_idx);
-    // Recalculate tiling/layout with the newly added client
+    
     state.arrange(Some(state.selmon));
     let sel_client_idx = state.mons[state.selmon].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
     let sel_client = &state.mons[state.selmon].clients[sel_client_idx];
@@ -1261,8 +1318,6 @@ unsafe fn manage(state: &mut GmuxState, w: xlib::Window, wa: &mut xlib::XWindowA
 
     state.xwrapper.map_window(sel_client.win);
     focus(state, state.selmon, Some(sel_client_idx));
-
-    // ... More logic to come ...
 }
 
 
@@ -1340,7 +1395,6 @@ fn scan(state: &mut GmuxState) {
     }
 }
 
-
 fn run(state: &mut GmuxState) {
     state.xwrapper.sync(false);
     while state.running != 0 {
@@ -1358,6 +1412,8 @@ fn run(state: &mut GmuxState) {
                 xlib::MapRequest => unsafe { maprequest(state, &mut ev) },
                 xlib::DestroyNotify => unsafe { destroy_notify(state, &mut ev) },
                 xlib::EnterNotify => unsafe { enter_notify(state, &mut ev) },
+                xlib::PropertyNotify => unsafe { propertynotify(state, &mut ev) },
+
                 _ => (),
             }
         }

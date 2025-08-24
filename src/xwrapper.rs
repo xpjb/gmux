@@ -536,10 +536,63 @@ impl XWrapper {
     pub fn get_transient_for_hint(&self, win: Window) -> Option<Window> {
         unsafe {
             let mut transient_win: xlib::Window = 0;
-            if xlib::XGetTransientForHint(self.dpy, win.0, &mut transient_win) != 0 {
+            if xlib::XGetTransientForHint(self.dpy, win.0, &mut transient_win) != 0 && transient_win != 0 {
                 Some(Window(transient_win))
             } else {
                 None
+            }
+        }
+    }
+
+    pub fn get_window_title(&self, win: Window) -> Option<String> {
+        unsafe {
+            use std::ffi::{CStr, c_char};
+            let mut text_prop: xlib::XTextProperty = std::mem::zeroed();
+            let net_wm_name = self.atoms.get(Atom::Net(Net::WMName));
+
+            // First try _NET_WM_NAME (UTF-8)
+            if xlib::XGetTextProperty(self.dpy, win.0, &mut text_prop, net_wm_name) != 0
+                && !text_prop.value.is_null()
+            {
+                let mut list: *mut *mut c_char = std::ptr::null_mut();
+                let mut count = 0;
+                if xlib::Xutf8TextPropertyToTextList(self.dpy, &mut text_prop, &mut list, &mut count)
+                    == xlib::Success as i32
+                    && count > 0
+                    && !list.is_null() && !(*list).is_null()
+                {
+                    let rust_str = CStr::from_ptr(*list).to_string_lossy().into_owned();
+                    xlib::XFreeStringList(list);
+                    xlib::XFree(text_prop.value as *mut _);
+                    return Some(rust_str);
+                }
+                if !text_prop.value.is_null() {
+                    xlib::XFree(text_prop.value as *mut _);
+                }
+            }
+
+            // Fallback to WM_NAME (legacy)
+            let mut window_name: *mut c_char = std::ptr::null_mut();
+            if xlib::XFetchName(self.dpy, win.0, &mut window_name) != 0 {
+                if !window_name.is_null() {
+                    let rust_str = CStr::from_ptr(window_name).to_string_lossy().into_owned();
+                    xlib::XFree(window_name as *mut _);
+                    return Some(rust_str);
+                }
+            }
+
+            None
+        }
+    }
+
+    pub fn get_wm_normal_hints(&self, win: Window) -> Result<xlib::XSizeHints, ()> {
+        unsafe {
+            let mut hints: xlib::XSizeHints = std::mem::zeroed();
+            let mut supplied: i64 = 0;
+            if xlib::XGetWMNormalHints(self.dpy, win.0, &mut hints, &mut supplied) == 0 {
+                Err(())
+            } else {
+                Ok(hints)
             }
         }
     }
