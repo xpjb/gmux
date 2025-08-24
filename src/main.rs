@@ -18,7 +18,7 @@ use xwrapper::{Atom, CursorId, KeySpec, Net, WM, Window, XWrapper, X_CONFIGURE_W
 /* ========= configurable constants (similar to dwm's config.h) ========= */
 const FONT: &str = "monospace:size=24"; // change size here to scale bar text
 const BORDERPX: i32 = 2;
-const BAR_H_PADDING: u32 = 5; // Horizontal padding for bar elements
+const BAR_H_PADDING: u32 = 15; // Horizontal padding for bar elements
 const BROKEN_UTF8: &str = "";
 // ======================================================================
 fn drawbar(state: &mut GmuxState, mon_idx: usize) {
@@ -864,7 +864,6 @@ fn parse_key_press(state: &GmuxState, ev: &xlib::XKeyEvent) -> Option<Action> {
     }
     None
 }
-
 fn parse_button_press(state: &GmuxState, ev: &xlib::XButtonPressedEvent) -> Option<Action> {
     let mon_idx = unsafe { state.wintomon(ev.window) };
     let mon = &state.mons[mon_idx];
@@ -873,14 +872,17 @@ fn parse_button_press(state: &GmuxState, ev: &xlib::XButtonPressedEvent) -> Opti
         let mut x = 0;
         let mut w: i32;
 
-        w = state.xwrapper.text_width(&mon.ltsymbol) as i32;
+        // Note: The layout symbol also needs padding for correct hit-testing
+        w = (state.xwrapper.text_width(&mon.ltsymbol) + (BAR_H_PADDING * 2)) as i32;
         if ev.x < x + w {
             return Some(Action::ToggleLayout(Some(mon_idx)));
         }
         x += w;
 
         for (i, &tag) in state.tags.iter().enumerate() {
-            w = state.xwrapper.text_width(tag) as i32;
+            // ✅ CORRECTED: Use the same width calculation as in drawbar
+            w = (state.xwrapper.text_width(tag) + (BAR_H_PADDING * 2)) as i32;
+            
             if ev.x < x + w {
                 return Some(Action::ViewTag(1 << i, Some(mon_idx)));
             }

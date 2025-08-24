@@ -15,3 +15,9 @@ noticing a bug where its hovering on one thats on a different tag
 - log mode with alt tilde or seomthing
 - dwm-spawn-cwd patch equivalent would be goated, ctrl+shift+enter
 - or alacritty can, or maybe wezterm can
+
+-----------
+
+some bugs
+hit test on tag wrong
+click on tag ur on does retarded shit
