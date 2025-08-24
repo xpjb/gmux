@@ -1121,9 +1121,6 @@ fn focus(state: &mut GmuxState, mon_idx: usize, c_idx: Option<usize>) {
     drawbars(state);
 }
 
-
-
-#[allow(dead_code)]
 fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) {
     if c_idx >= state.mons[mon_idx].clients.len() {
         return;
@@ -1139,7 +1136,6 @@ fn unfocus(state: &mut GmuxState, mon_idx: usize, c_idx: usize, setfocus: bool) 
         // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
     }
 }
-
 
 unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &mut (*(e as *mut xlib::XMotionEvent)) };
@@ -1157,7 +1153,6 @@ unsafe extern "C" fn motionnotify(state: &mut GmuxState, e: *mut xlib::XEvent) {
 }
 
 // Focus follows mouse when pointer enters a client window
-
 unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &*(e as *mut xlib::XCrossingEvent) };
     // ignore non-normal or inferior events (same filtering as dwm)
@@ -1174,7 +1169,6 @@ unsafe extern "C" fn enter_notify(state: &mut GmuxState, e: *mut xlib::XEvent) {
         }
     }
 }
-
 
 unsafe extern "C" fn maprequest(state: &mut GmuxState, e: *mut xlib::XEvent) {
     let ev = unsafe { &mut (*(e as *mut xlib::XMapRequestEvent)) };
@@ -1252,7 +1246,6 @@ unsafe fn wintoclient_idx(state: &GmuxState, w: xlib::Window) -> Option<(usize, 
     }
     None
 }
-
 
 fn intersect(x: i32, y: i32, w: i32, h: i32, m: &Monitor) -> i32 {
     std::cmp::max(
