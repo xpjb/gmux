@@ -81,13 +81,21 @@ fn drawbar(state: &mut GmuxState, mon_idx: usize) {
 
     // Center Text
     // let s = mon.sel.map(|i| mon.clients.get(i).
+    // Determine background color and text based on whether a client is selected
     let s = mon.sel.and_then(|i| mon.clients.get(i).map(|c| c.name.as_str()));
-    let s = s.unwrap_or("");
+
+    let (col, text_to_draw) = if let Some(name) = s {
+        // If a client is selected, use foreground color and its name
+        (Colour::BarForeground, name)
+    } else {
+        // Otherwise, use background color and an empty string
+        (Colour::BarBackground, "")
+    };
 
 
     let wh_center = (bar_wh - pos) - wh_right.projx();
-    state.xwrapper.rect(Colour::BarForeground, pos, wh_center, true);
-    state.xwrapper.text(Colour::TextNormal, pos, wh_center, BAR_H_PADDING, s);
+    state.xwrapper.rect(col, pos, wh_center, true);
+    state.xwrapper.text(Colour::TextNormal, pos, wh_center, BAR_H_PADDING, text_to_draw);
 
     // --- 5. Map the drawing buffer to the screen ---
     state.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
@@ -574,16 +582,45 @@ impl GmuxState {
         r
     }
 
-    
     fn arrange(&mut self, mon_idx: Option<usize>) {
         if let Some(idx) = mon_idx {
-            if let Some(mon) = self.mons.get_mut(idx) {
-                let stack = mon.stack.clone();
-                show_hide(self, idx, &stack);
-                self.arrange_mon(idx);
-                self.restack(idx);
-            }
+            let stack = self.mons[idx].stack.clone();
+            show_hide(self, idx, &stack);
+            self.arrange_mon(idx);
+    
+            // ======================== NEW LOGIC START ========================
+            // After arranging, determine the correct client to focus.
+            let new_sel_idx = {
+                let mon = &self.mons[idx];
+                // Check if the current selection is still visible.
+                let current_sel_is_visible = mon.sel
+                    .and_then(|s_idx| mon.clients.get(s_idx)) // Safely get the client
+                    .map(|s_client| is_visible(s_client, mon))
+                    .unwrap_or(false);
+    
+                if current_sel_is_visible {
+                    // If it's still visible, keep it selected.
+                    mon.sel
+                } else {
+                    // Otherwise, find the first visible client and select it.
+                    // If no client is visible, this will be `None`.
+                    mon.clients.iter().enumerate()
+                        .find(|(_, c)| is_visible(c, mon))
+                        .map(|(i, _)| i)
+                }
+            };
+    
+            // Update the focus with the new selection (or None).
+            // This function will also call `drawbars` to update the visuals.
+            focus(self, idx, new_sel_idx);
+            // ========================= NEW LOGIC END =========================
+    
+            self.restack(idx);
+    
         } else {
+            // This part arranges all monitors. You might need to apply
+            // similar focus logic here if you want multi-monitor
+            // arrange operations to update focus correctly.
             for i in 0..self.mons.len() {
                 let stack = self.mons[i].stack.clone();
                 show_hide(self, i, &stack);
