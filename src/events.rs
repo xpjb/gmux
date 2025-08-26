@@ -20,24 +20,10 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     let mon = &state.mons[mon_idx];
 
     if ev.window == mon.bar_window.0 {
-        let mut x = 0;
-        let mut w: i32;
-
-        w = (state.xwrapper.text_width(&mon.lt_symbol)
-            + (config::BAR_H_PADDING * 2)) as i32;
-        if ev.x < x + w {
-            return Some(Action::ToggleLayout(Some(mon_idx)));
-        }
-        x += w;
-
-        for (i, &tag) in state.tags.iter().enumerate() {
-            w = (state.xwrapper.text_width(tag) + (config::BAR_H_PADDING * 2))
-                as i32;
-
-            if ev.x < x + w {
-                return Some(Action::ViewTag(1 << i, Some(mon_idx)));
+        for clickable in &mon.clickables {
+            if ev.x >= clickable.pos.x && ev.x < clickable.pos.x + clickable.size.x {
+                return Some(clickable.action);
             }
-            x += w;
         }
         return None;
     } else if let Some((m_idx, c_idx)) = unsafe { state.window_to_client_idx(ev.window) } {

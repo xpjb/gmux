@@ -215,10 +215,12 @@ impl Gmux {
     }
 
     fn draw_bar(&mut self, mon_idx: usize) {
-        let mon = &self.mons[mon_idx];
+        let mon = &mut self.mons[mon_idx];
+        mon.clickables.clear();
+
         let bar_wh = ivec2(mon.ww, self.bar_height);
-    let barwin = mon.bar_window;
-    let mut pos = ivec2(0, 0);
+        let barwin = mon.bar_window;
+        let mut pos = ivec2(0, 0);
         let box_wh = ivec2(self.bar_height / 6 + 2, self.bar_height / 6 + 2);
         let box_xy = ivec2(self.bar_height / 9, self.bar_height/9);
 
@@ -275,8 +277,10 @@ impl Gmux {
         // --- END CORRECTION ---
 
             self.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
-        pos.x += w as i32;
-    }
+            let action = Action::ViewTag(1 << i, Some(mon_idx));
+            mon.clickables.push(state::Clickable{pos, size: tag_wh, action});
+            pos.x += w as i32;
+        }
 
     // Right Text
     let s = "right_text";

@@ -3,8 +3,17 @@ use crate::layouts::Layout;
 use crate::xwrapper::{CursorId, Window, XWrapper, KeySpecification};
 use x11::xlib;
 use crate::Colour;
+use crate::ivec2::IVec2;
+use crate::actions::Action;
 
 // Structs
+
+#[derive(Clone, Copy, Debug)]
+pub struct Clickable {
+    pub pos: IVec2,
+    pub size: IVec2,
+    pub action: Action,
+}
 
 #[derive(Debug, Clone)]
 pub struct Monitor {
@@ -27,6 +36,7 @@ pub struct Monitor {
     pub show_bar: bool,
     pub top_bar: bool,
     pub clients: Vec<Client>,
+    pub clickables: Vec<Clickable>,
     pub sel: Option<usize>,
     pub stack: Vec<usize>,
     pub bar_window: Window,
@@ -67,6 +77,7 @@ impl Default for Monitor {
             show_bar: false,
             top_bar: false,
             clients: Vec::new(),
+            clickables: Vec::new(),
             sel: None,
             stack: Vec::new(),
             bar_window: Window(0),
