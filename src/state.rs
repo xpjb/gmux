@@ -6,6 +6,15 @@ use crate::Colour;
 use crate::ivec2::IVec2;
 use crate::actions::Action;
 use crate::BarState;
+use std::ffi::CString;
+use std::os::raw::c_uchar;
+use std::time::{Duration, Instant};
+use crate::xwrapper::{Atom, CursorId, KeySpecification, Net, Window, XWrapper};
+use crate::state::{Client, Gmux, Monitor};
+use crate::config::{KeyBinding, BAR_H_PADDING, BORDER_PX};
+use crate::actions::Action;
+use crate::layouts::LAYOUTS;
+use crate::ivec2::ivec2;
 
 // Structs
 
@@ -358,5 +367,173 @@ impl Gmux {
     fn grab_buttons(&mut self, _mon_idx: usize, _c_idx: usize, _focused: bool) {
         // For now, this is a stub
         // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
+    }
+
+    pub fn new() -> Result<Gmux, String> {
+        let mut xwrapper = XWrapper::connect().expect("Failed to open display");
+        unsafe {
+            let locale = CString::new("").unwrap();
+            if libc::setlocale(libc::LC_CTYPE, locale.as_ptr()).is_null()
+                || xlib::XSupportsLocale() == 0
+            {
+                eprintln!("warning: no locale support");
+            }
+
+            if let Err(e) = xwrapper.check_for_other_wm() {
+                return Err(e);
+            }
+            xwrapper.set_default_error_handler();
+        }
+
+        let mut state = Gmux {
+            status_text: String::new(),
+            screen: 0,
+            screen_width: 0,
+            screen_height: 0,
+            bar_height: 0,
+            _bar_line_width: 0,
+            lr_padding: 0,
+            numlock_mask: 0,
+            running: 1,
+            cursor: [CursorId(0); CursorType::Last as usize],
+            mons: Vec::new(),
+            selected_monitor: 0,
+            root: Window(0),
+            wm_check_window: Window(0),
+            _xerror: false,
+            tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+            bar_state: BarState::Normal,
+            xwrapper,
+        };
+
+        state.setup();
+        Ok(state)
+    }
+
+    fn setup(&mut self) {
+        unsafe {
+            self.screen = self.xwrapper.default_screen();
+            self.screen_width = self.xwrapper.display_width(self.screen);
+            self.screen_height = self.xwrapper.display_height(self.screen);
+            self.root = self.xwrapper.root_window(self.screen);
+            
+            let fonts = &["monospace:size=12"]; // TODO: configurable
+            if !self.xwrapper.fontset_create(fonts) {
+                die("no fonts could be loaded.");
+            }
+
+            // derive bar height and lr_padding from font height like dwm
+            let h = self.xwrapper.get_font_height() as i32;
+            if h > 0 {
+                self.bar_height = h + 2;
+                self.lr_padding = h + 2;
+            }
+
+            // initialise status text sample
+            self.status_text = "gmux".to_string();
+
+            self.draw_bars();
+
+            // Create a monitor
+            let mut mon = Monitor::default();
+            mon.tagset = [1, 1];
+            mon.mfact = 0.55;
+            mon.nmaster = 1;
+            mon.show_bar = true;
+            mon.top_bar = true;
+            // Calculate window area accounting for the bar height
+            if mon.show_bar {
+                mon.by = if mon.top_bar { 0 } else { self.screen_height - self.bar_height };
+                mon.wy = if mon.top_bar { self.bar_height } else { 0 };
+                mon.wh = self.screen_height - self.bar_height;
+            } else {
+                mon.by = -self.bar_height;
+                mon.wy = 0;
+                mon.wh = self.screen_height;
+            }
+            mon.lt[0] = &LAYOUTS[0];
+            mon.lt[1] = &LAYOUTS[1];
+            mon.lt_symbol = LAYOUTS[0].symbol.to_string();
+            mon.wx = 0;
+            mon.ww = self.screen_width;
+            let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
+            wa.override_redirect = 1;
+            wa.background_pixmap = xlib::ParentRelative as u64;
+            wa.event_mask = xlib::ButtonPressMask | xlib::ExposureMask;
+            let valuemask = xlib::CWOverrideRedirect | xlib::CWBackPixmap | xlib::CWEventMask;
+            let barwin = self.xwrapper.create_window(
+                self.root,
+                mon.wx,
+                mon.by,
+                mon.ww as u32,
+                self.bar_height as u32,
+                0,
+                self.xwrapper.default_depth(self.screen),
+                xlib::InputOutput as u32,
+                self.xwrapper.default_visual(self.screen),
+                valuemask as u64,
+                &mut wa,
+            );
+            mon.bar_window = barwin;
+            self.xwrapper.map_raised(mon.bar_window);
+            self.mons.push(mon);
+            self.selected_monitor = self.mons.len() - 1;
+
+            self.cursor[CursorType::Normal as usize] = self.xwrapper.create_font_cursor_as_id(68);
+            self.cursor[CursorType::Resize as usize] = self.xwrapper.create_font_cursor_as_id(120);
+            self.cursor[CursorType::Move as usize] = self.xwrapper.create_font_cursor_as_id(52);
+            
+            self.wm_check_window = self.xwrapper.create_simple_window(self.root, 0, 0, 1, 1, 0, 0, 0);
+            let wmcheckwin_val = self.wm_check_window.0;
+            self.xwrapper.change_property(self.wm_check_window, self.xwrapper.atoms.get(Atom::Net(Net::WMCheck)), xlib::XA_WINDOW, 32,
+                xlib::PropModeReplace, &wmcheckwin_val as *const u64 as *const c_uchar, 1);
+
+            let dwm_name = CString::new("dwm").unwrap();
+            self.xwrapper.change_property(self.wm_check_window, self.xwrapper.atoms.get(Atom::Net(Net::WMName)), xlib::XA_STRING, 8,
+                xlib::PropModeReplace, dwm_name.as_ptr() as *const c_uchar, 3);
+            self.xwrapper.change_property(self.root, self.xwrapper.atoms.get(Atom::Net(Net::WMCheck)), xlib::XA_WINDOW, 32,
+                xlib::PropModeReplace, &wmcheckwin_val as *const u64 as *const c_uchar, 1);
+
+            self.xwrapper.change_property(self.root, self.xwrapper.atoms.get(Atom::Net(Net::Supported)), xlib::XA_ATOM, 32,
+                xlib::PropModeReplace, self.xwrapper.atoms.net_atom_ptr() as *const c_uchar, Net::Last as i32);
+            self.xwrapper.delete_property(self.root, self.xwrapper.atoms.get(Atom::Net(Net::ClientList)));
+
+            let mut wa: xlib::XSetWindowAttributes = std::mem::zeroed();
+            wa.cursor = self.cursor[CursorType::Normal as usize].0;
+            wa.event_mask = (xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask
+                | xlib::ButtonPressMask | xlib::PointerMotionMask | xlib::EnterWindowMask
+                | xlib::LeaveWindowMask | xlib::StructureNotifyMask | xlib::PropertyChangeMask
+                | xlib::KeyPressMask) as i64;
+            self.xwrapper.change_window_attributes(self.root, (xlib::CWEventMask | xlib::CWCursor) as u64, &mut wa);
+            self.xwrapper.select_input(self.root, wa.event_mask);
+
+            // Update NumLockMask and grab global keys
+            self.numlock_mask = self.xwrapper.get_numlock_mask();
+            let key_actions: Vec<KeyBinding> = config::grab_keys();
+            let key_specs: Vec<KeySpecification> = key_actions
+                .iter()
+                .map(|k| KeySpecification {
+                    mask: k.mask,
+                    keysym: k.keysym,
+                })
+                .collect();
+            self
+                .xwrapper
+                .grab_keys(self.root, self.numlock_mask, &key_specs);
+
+            self.focus(0, None);
+        }
+    }
+}
+
+impl Drop for Gmux {
+    fn drop(&mut self) {
+        for i in 0..self.mons.len() {
+            while !self.mons[i].stack.is_empty() {
+                let c_idx = self.mons[i].stack.pop().unwrap();
+                self.unmanage(i, c_idx, false);
+            }
+        }
+        self.xwrapper.ungrab_key(self.root);
     }
 }
