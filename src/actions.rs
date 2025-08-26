@@ -25,6 +25,7 @@ pub enum Action {
     ToggleTag(u32),
     CycleTag(i32),
     FocusClient(usize, usize),
+    EnterLauncherMode,
 }
 
 impl Action {
@@ -32,6 +33,9 @@ impl Action {
         match self {
             Action::Spawn(_cmd) => {
                 // This will be handled in main.rs now
+            }
+            Action::EnterLauncherMode => {
+                state.enter_launcher_mode();
             }
             Action::ToggleBar => {
                 let selmon_idx = state.selected_monitor;

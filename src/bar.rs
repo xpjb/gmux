@@ -6,11 +6,18 @@ use crate::config::BAR_H_PADDING;
 use crate::actions::Action;
 use crate::state;
 
+#[derive(Clone)]
 pub enum BarState {
     Normal,
     ErrorDisplay {
         message: String,
         expiry: Instant,
+    },
+    Launcher {
+        prompt: String,
+        input: String,
+        candidate_indices: Vec<usize>,
+        selected_idx: usize,
     },
 }
 
@@ -29,16 +36,14 @@ impl Gmux {
         }
     }
     pub fn draw_bar(&mut self, mon_idx: usize) {
-// We clone the message to avoid borrowing issues with `self`
-let message = match &self.bar_state {
-    BarState::ErrorDisplay { message, .. } => Some(message.clone()),
-    _ => None,
-};
-
-match self.bar_state {
-    BarState::Normal => self.draw_normal_bar(mon_idx),
-    BarState::ErrorDisplay { .. } => self.draw_error_bar(mon_idx, &message.unwrap()),
-}
+        let bar_state_clone = self.bar_state.clone();
+        match bar_state_clone {
+            BarState::Normal => self.draw_normal_bar(mon_idx),
+            BarState::ErrorDisplay { message, .. } => {
+                self.draw_error_bar(mon_idx, &message);
+            }
+            BarState::Launcher { .. } => self.draw_launcher_bar(mon_idx),
+        }
     }
     pub fn draw_normal_bar(&mut self, mon_idx: usize) {
         let mon = &mut self.mons[mon_idx];
@@ -146,5 +151,42 @@ match self.bar_state {
 
         // 3. Map to screen
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
+    }
+
+    fn draw_launcher_bar(&mut self, mon_idx: usize) {
+        let (prompt, input, candidate_indices, selected_idx) =
+            if let BarState::Launcher { prompt, input, candidate_indices, selected_idx, .. } = &self.bar_state {
+                (prompt.clone(), input.clone(), candidate_indices.clone(), *selected_idx)
+            } else {
+                return;
+            };
+
+        let mon = &mut self.mons[mon_idx];
+        let bar_wh = ivec2(mon.ww, self.bar_height);
+
+        self.xwrapper.rect(Colour::BarBackground, ivec2(0, 0), bar_wh, true);
+        let mut pos_x = 0;
+
+        let prompt_text = format!("{}{}", prompt, input);
+        let w = self.xwrapper.text_width(&prompt_text) + (BAR_H_PADDING * 2);
+        self.xwrapper.text(Colour::TextNormal, ivec2(pos_x, 0), ivec2(w as _, self.bar_height), BAR_H_PADDING, &prompt_text);
+        pos_x += w as i32;
+
+        for (i, &command_idx) in candidate_indices.iter().enumerate() {
+            let candidate = &self.all_commands[command_idx];
+            let w = self.xwrapper.text_width(candidate) + (BAR_H_PADDING * 2);
+            let wh = ivec2(w as _, self.bar_height);
+
+            let (bg_col, fg_col) = if i == selected_idx {
+                (Colour::BarForeground, Colour::TextNormal)
+            } else {
+                (Colour::BarBackground, Colour::TextQuiet)
+            };
+
+            self.xwrapper.rect(bg_col, ivec2(pos_x, 0), wh, true);
+            self.xwrapper.text(fg_col, ivec2(pos_x, 0), wh, BAR_H_PADDING, candidate);
+            pos_x += w as i32;
+        }
+        self.xwrapper.map_drawable(mon.bar_window, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
     }
 }

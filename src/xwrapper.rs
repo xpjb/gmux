@@ -666,6 +666,19 @@ impl XWrapper {
         unsafe { xlib::XKeycodeToKeysym(self.dpy, keycode as u8, 0) }
     }
 
+    pub fn keysym_to_string(&self, keysym: u32) -> Option<String> {
+        unsafe {
+            let c_str = xlib::XKeysymToString(keysym as u64);
+            if c_str.is_null() {
+                return None;
+            }
+            std::ffi::CStr::from_ptr(c_str)
+                .to_str()
+                .ok()
+                .map(String::from)
+        }
+    }
+
     pub fn set_input_focus(&self, win: Window, revert_to: i32) {
         unsafe {
             xlib::XSetInputFocus(self.dpy, win.0, revert_to, xlib::CurrentTime);

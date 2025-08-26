@@ -105,7 +105,9 @@ impl Gmux {
             if let Some(ev) = self.xwrapper.next_event() {
                 match ev {
                     xwrapper::Event::KeyPress(kev) => {
-                        if let Some(action) = events::parse_key_press(self, &kev) {
+                        if let BarState::Launcher { .. } = self.bar_state {
+                            self.handle_launcher_keypress(&kev);
+                        } else if let Some(action) = events::parse_key_press(self, &kev) {
                             match action {
                                 Action::Spawn(cmd) => self.spawn(&cmd),
                                 _ => action.execute(self),

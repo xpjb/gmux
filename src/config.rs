@@ -21,7 +21,7 @@ pub fn grab_keys() -> Vec<KeyBinding> {
     keys.push(KeyBinding {
         mask: MOD,
         keysym: keysym::XK_p,
-        action: Action::Spawn("dmenu_run -m 0 -fn 'monospace:size=16' -nb '#222222' -nf '#bbbbbb' -sb '#005577' -sf '#eeeeee'".to_string()),
+        action: Action::EnterLauncherMode,
     });
     keys.push(KeyBinding {
         mask: MOD | SHIFT_MASK,

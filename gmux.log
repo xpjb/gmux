@@ -1,5 +1,1 @@
-04:44:09 [INFO] Starting gmux...
-04:44:12 [INFO] stderr from 'ls /nonexistent/directory': ls: cannot access '/nonexistent/directory': No such file or directory
-04:44:12 [ERROR] Failed to run 'ls /nonexistent/directory': ls: cannot access '/nonexistent/directory': No such file or directory
-04:44:38 [INFO] stderr from 'ls /nonexistent/directory': ls: cannot access '/nonexistent/directory': No such file or directory
-04:44:38 [ERROR] Failed to run 'ls /nonexistent/directory': ls: cannot access '/nonexistent/directory': No such file or directory
+10:03:52 [INFO] Starting gmux...

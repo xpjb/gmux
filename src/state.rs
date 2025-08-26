@@ -1,7 +1,6 @@
 use std::os::raw::{c_int, c_uint};
 use crate::layouts::Layout;
 use crate::xwrapper::{CursorId, Window, XWrapper, KeySpecification};
-use x11::xlib;
 use crate::Colour;
 use crate::ivec2::IVec2;
 use crate::actions::Action;
@@ -15,6 +14,13 @@ use crate::CursorType;
 use crate::config;
 use std::sync::mpsc::{Sender, Receiver};
 use crate::error::GmuxError;
+use std::collections::HashSet;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::env;
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use x11::{keysym, xlib};
 
 // Structs
 
@@ -159,6 +165,7 @@ pub struct Gmux {
     pub wm_check_window: Window,
     pub _xerror: bool,
     pub tags: [&'static str; 9],
+    pub all_commands: Vec<String>,
     pub bar_state: BarState,
     pub command_sender: Sender<GmuxError>,
     pub command_receiver: Receiver<GmuxError>,
@@ -371,6 +378,118 @@ impl Gmux {
         // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
     }
 
+    pub fn handle_launcher_keypress(&mut self, kev: &xlib::XKeyEvent) {
+        let mut new_state = None;
+        let mut command_to_run = None;
+
+        if let BarState::Launcher {
+            input,
+            candidate_indices,
+            selected_idx,
+            ..
+        } = &mut self.bar_state
+        {
+            let mut dirty = false;
+            let keysym = unsafe { xlib::XLookupKeysym(kev as *const _ as *mut _, 0) } as u32;
+
+            match keysym {
+                keysym::XK_Escape => {
+                    new_state = Some(BarState::Normal);
+                }
+                keysym::XK_Return => {
+                    if !candidate_indices.is_empty() {
+                        let command_idx = candidate_indices[*selected_idx];
+                        command_to_run = Some(self.all_commands[command_idx].clone());
+                    }
+                    new_state = Some(BarState::Normal);
+                }
+                keysym::XK_Left => {
+                    if *selected_idx > 0 {
+                        *selected_idx -= 1;
+                    }
+                }
+                keysym::XK_Right => {
+                    if !candidate_indices.is_empty() && *selected_idx < candidate_indices.len() - 1 {
+                        *selected_idx += 1;
+                    }
+                }
+                keysym::XK_BackSpace => {
+                    input.pop();
+                    dirty = true;
+                }
+                _ => {
+                    if let Some(mut s) = self.xwrapper.keysym_to_string(keysym) {
+                        if s.len() == 1
+                            && s.chars().next().unwrap().is_ascii()
+                            && !s.chars().next().unwrap().is_ascii_control()
+                        {
+                            s.make_ascii_lowercase();
+                            input.push_str(&s);
+                            dirty = true;
+                        }
+                    }
+                }
+            }
+
+            if dirty {
+                let matcher = SkimMatcherV2::default();
+                let mut new_candidates: Vec<(i64, usize)> = self
+                    .all_commands
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, cmd)| matcher.fuzzy_match(cmd, input).map(|score| (score, i)))
+                    .collect();
+
+                new_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+                *candidate_indices = new_candidates.into_iter().map(|(_, i)| i).collect();
+                *selected_idx = 0;
+            }
+        }
+
+        if let Some(cmd) = command_to_run {
+            self.spawn(&cmd);
+        }
+
+        if let Some(state) = new_state {
+            self.bar_state = state;
+        }
+
+        self.draw_bars();
+    }
+
+    pub fn enter_launcher_mode(&mut self) {
+        let initial_candidates = (0..self.all_commands.len()).collect();
+        self.bar_state = BarState::Launcher {
+            prompt: "> ".to_string(),
+            input: String::new(),
+            candidate_indices: initial_candidates,
+            selected_idx: 0,
+        };
+        self.draw_bars();
+    }
+
+    fn get_commands() -> Vec<String> {
+        let mut commands = HashSet::new();
+        if let Ok(path_var) = env::var("PATH") {
+            for path in path_var.split(':') {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        if let Ok(metadata) = entry.metadata() {
+                            if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                                if let Some(command) = entry.file_name().to_str() {
+                                    commands.insert(command.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut sorted_commands: Vec<_> = commands.into_iter().collect();
+        sorted_commands.sort();
+        sorted_commands
+    }
+
     pub fn new(command_sender: Sender<GmuxError>, command_receiver: Receiver<GmuxError>) -> Result<Gmux, String> {
         let mut xwrapper = XWrapper::connect().expect("Failed to open display");
         unsafe {
@@ -405,6 +524,7 @@ impl Gmux {
             _xerror: false,
             tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
             bar_state: BarState::Normal,
+            all_commands: Gmux::get_commands(),
             xwrapper,
             command_sender,
             command_receiver,

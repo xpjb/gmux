@@ -18,11 +18,17 @@ noticing a bug where its hovering on one thats on a different tag
 
 -----------
 
-some bugs
-hit test on tag wrong
-click on tag ur on does retarded shit
-
-
-scrolling tags wud b nice
-
 hot reload system im v curious about
+
+note to self, spin loop in run maybe not very good!
+launcher time
+production, yea is anything actually wrong?
+summary tool or even just cat and commentin out shit for if its too long etc, or ignore imports etc
+or use prelude pattern, less imports anyway
+
+include time and date for right_text, cleaning up bar etc
+
+
+heyy launcher is pretty good,
+it needs a bit of ux maybe and not sure if thats the entire path, not sure where dmenu gets the path from.
+I can probably pump dmenu in for any improvements to the filtering process etc
