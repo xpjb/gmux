@@ -1,14 +1,12 @@
-use crate::command::Command;
 use crate::state::Gmux;
 use crate::layouts::Layout;
 use x11::xlib;
 use crate::TAG_MASK;
-use crate::utils;
 use crate::config;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Action {
-    Spawn(&'static Command),
+    Spawn(String),
     ToggleBar,
     FocusStack(i32),
     IncNMaster(i32),
@@ -27,14 +25,13 @@ pub enum Action {
     ToggleTag(u32),
     CycleTag(i32),
     FocusClient(usize, usize),
-    TestError,
 }
 
 impl Action {
     pub fn execute(&self, state: &mut Gmux) {
         match self {
-            Action::Spawn(cmd) => {
-                utils::spawn(cmd);
+            Action::Spawn(_cmd) => {
+                // This will be handled in main.rs now
             }
             Action::ToggleBar => {
                 let selmon_idx = state.selected_monitor;
@@ -276,9 +273,6 @@ impl Action {
                 state.focus(*mon_idx, Some(*client_idx));
                 state.restack(state.selected_monitor);
                 state.xwrapper.allow_events(xlib::ReplayPointer);
-            }
-            Action::TestError => {
-                state.set_error_state("This is a test error!".to_string());
             }
         }
     }

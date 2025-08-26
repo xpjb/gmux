@@ -13,9 +13,12 @@ use crate::config::KeyBinding;
 use crate::layouts::LAYOUTS;
 use crate::CursorType;
 use crate::config;
+use std::sync::mpsc::{Sender, Receiver};
+use crate::error::GmuxError;
+
 // Structs
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Clickable {
     pub pos: IVec2,
     pub size: IVec2,
@@ -157,6 +160,8 @@ pub struct Gmux {
     pub _xerror: bool,
     pub tags: [&'static str; 9],
     pub bar_state: BarState,
+    pub command_sender: Sender<GmuxError>,
+    pub command_receiver: Receiver<GmuxError>,
 }
 
 impl Gmux {
@@ -366,7 +371,7 @@ impl Gmux {
         // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
     }
 
-    pub fn new() -> Result<Gmux, String> {
+    pub fn new(command_sender: Sender<GmuxError>, command_receiver: Receiver<GmuxError>) -> Result<Gmux, String> {
         let mut xwrapper = XWrapper::connect().expect("Failed to open display");
         unsafe {
             let locale = CString::new("").unwrap();
@@ -401,6 +406,8 @@ impl Gmux {
             tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
             bar_state: BarState::Normal,
             xwrapper,
+            command_sender,
+            command_receiver,
         };
 
         state.setup();

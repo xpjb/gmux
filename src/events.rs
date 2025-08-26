@@ -10,7 +10,7 @@ pub fn parse_key_press(state: &Gmux, ev: &xlib::XKeyEvent) -> Option<Action> {
         if keysym == key.keysym
             && state.xwrapper.clean_mask(key.mask) == state.xwrapper.clean_mask(ev.state)
         {
-            return Some(key.action);
+            return Some(key.action.clone());
         }
     }
     None
@@ -28,7 +28,7 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
                     Action::ViewTag(_, _) => {
                         // It's a tag
                         match ev.button {
-                            1 => return Some(clickable.action), // Left click
+                            1 => return Some(clickable.action.clone()), // Left click
                             4 => return Some(Action::CycleTag(-1)), // Scroll up
                             5 => return Some(Action::CycleTag(1)), // Scroll down
                             _ => return None, // Other clicks on tags do nothing
@@ -36,7 +36,7 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
                     },
                     _ => { // Not a tag
                         if ev.button == 1 {
-                            return Some(clickable.action); // Left click for other elements
+                            return Some(clickable.action.clone()); // Left click for other elements
                         } else {
                             return None;
                         }

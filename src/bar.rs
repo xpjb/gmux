@@ -1,12 +1,10 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use crate::state::Gmux;
 use crate::ivec2::ivec2;
 use crate::colour::Colour;
 use crate::config::BAR_H_PADDING;
 use crate::actions::Action;
-use crate::state::Clickable;
 use crate::state;
-use x11::xlib;
 
 pub enum BarState {
     Normal,
@@ -21,11 +19,11 @@ impl Gmux {
         if let BarState::ErrorDisplay { expiry, .. } = self.bar_state {
             if Instant::now() >= expiry {
                 self.bar_state = BarState::Normal;
+                self.draw_bars();
             }
         }
     }
     pub fn draw_bars(&mut self) {
-        self.update_bars();
         for i in 0..self.mons.len() {
             self.draw_bar(i);
         }

@@ -3,21 +3,26 @@ use x11::xlib;
 use colour::Colour;
 use xwrapper::Window;
 use state::{Client, Gmux};
-use config::{BAR_H_PADDING, BORDER_PX};
+use config::BORDER_PX;
 use actions::Action;
 use crate::bar::BarState;
+use simplelog::*;
+use std::fs::File;
+use crate::error::GmuxError;
+use std::process::Command;
+use std::sync::mpsc::channel;
+use std::thread;
 
 mod ivec2;
 mod xwrapper;
-mod command;
 mod colour;
 mod state;
 mod config;
 mod layouts;
 mod actions;
 mod events;
-mod utils;
 mod bar;
+mod error;
 
 const TAG_MASK: u32 = (1 << config::TAGS.len()) - 1;
 
@@ -30,14 +35,81 @@ enum CursorType {
 }
 
 impl Gmux {
+    fn spawn(&mut self, cmd: &str) {
+        let sender = self.command_sender.clone();
+        let command_string = cmd.to_string();
+
+        thread::spawn(move || {
+            let output_result = Command::new("sh")
+                .arg("-c")
+                .arg(&command_string)
+                .output();
+
+            let output = match output_result {
+                Ok(o) => o,
+                Err(e) => {
+                    // The command failed to even start
+                    let error = GmuxError::Subprocess {
+                        command: command_string,
+                        stderr: e.to_string(),
+                    };
+                    let _ = sender.send(error);
+                    return;
+                }
+            };
+
+            // 1. Always log stderr if it's not empty
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                log::info!("stderr from '{}': {}", command_string, stderr.trim());
+            }
+
+            // 2. Only send an error to the bar on a non-zero exit code
+            if !output.status.success() {
+                let error = GmuxError::Subprocess {
+                    command: command_string,
+                    stderr: stderr.to_string(),
+                };
+                let _ = sender.send(error);
+            }
+        });
+    }
+
+    fn process_error(&mut self, error: GmuxError) {
+        // Log it as a high-priority error
+        log::error!("{}", error);
+        // Display it on the bar
+        self.set_error_state(error.to_string());
+    }
+
     fn run(&mut self) {
+        const BAR_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+        let mut bar_acc = Duration::from_millis(0);
+        let mut last_frame = Instant::now();
         self.xwrapper.sync(false);
         while self.running != 0 {
+            let now = Instant::now();
+            bar_acc += now.duration_since(last_frame);
+            last_frame = now;
+
+            // Reap any reported errors from child processes
+            while let Ok(error) = self.command_receiver.try_recv() {
+                self.process_error(error);
+            }
+            if bar_acc >= BAR_UPDATE_INTERVAL {
+                self.update_bars();
+                bar_acc -= BAR_UPDATE_INTERVAL;
+            }
+
+            // Process X11 events as normal
             if let Some(ev) = self.xwrapper.next_event() {
                 match ev {
                     xwrapper::Event::KeyPress(kev) => {
                         if let Some(action) = events::parse_key_press(self, &kev) {
-                            action.execute(self);
+                            match action {
+                                Action::Spawn(cmd) => self.spawn(&cmd),
+                                _ => action.execute(self),
+                            }
                         }
                     }
                     xwrapper::Event::ButtonPress(mut bev) => unsafe { events::button_press(self, &mut bev) },
@@ -313,8 +385,17 @@ impl Gmux {
 
 
 fn main() {
-    println!("Starting gmux...");
-    match Gmux::new() {
+    CombinedLogger::init(vec![
+        WriteLogger::new(
+            LevelFilter::Info,
+            Config::default(),
+            File::create("gmux.log").unwrap(),
+        ),
+    ]).unwrap();
+
+    log::info!("Starting gmux...");
+    let (tx, rx) = channel();
+    match Gmux::new(tx, rx) {
         Ok(mut gmux) => {
             gmux.scan();
             gmux.run();
