@@ -8,11 +8,9 @@ use crate::actions::Action;
 use crate::BarState;
 use std::ffi::CString;
 use std::os::raw::c_uchar;
-use std::time::{Duration, Instant};
 use crate::xwrapper::{Atom, Net};
-use crate::config::{KeyBinding, BAR_H_PADDING, BORDER_PX};
+use crate::config::KeyBinding;
 use crate::layouts::LAYOUTS;
-use crate::ivec2::ivec2;
 use crate::CursorType;
 use crate::config;
 // Structs

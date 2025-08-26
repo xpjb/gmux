@@ -1,13 +1,10 @@
-use std::ffi::CString;
-use std::os::raw::c_uchar;
 use std::time::{Duration, Instant};
 use x11::xlib;
 use colour::Colour;
-use xwrapper::{Atom, CursorId, KeySpecification, Net, Window, XWrapper};
-use state::{Client, Gmux, Monitor};
-use config::{KeyBinding, BAR_H_PADDING, BORDER_PX};
+use xwrapper::Window;
+use state::{Client, Gmux};
+use config::{BAR_H_PADDING, BORDER_PX};
 use actions::Action;
-use layouts::LAYOUTS;
 use crate::ivec2::ivec2;
 
 mod ivec2;
