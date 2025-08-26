@@ -1,6 +1,6 @@
 use x11::xft::XftDraw;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 use crate::colour::{ALL_COLOURS, Colour};
@@ -24,23 +24,23 @@ pub const X_COPY_AREA: u8 = 62;
 static mut X_ERROR_OCCURRED: bool = false;
 
 #[allow(unused_variables)]
-unsafe extern "C" fn xerror_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+unsafe extern "C" fn x_error_ignore(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
     // Always return 0 to tell Xlib that the error was handled.
     0
 }
 
-unsafe extern "C" fn xerror_start(
+unsafe extern "C" fn x_error_start(
     _dpy: *mut xlib::Display,
     _ee: *mut xlib::XErrorEvent,
-) -> c_int {
+) -> c_int { unsafe {
     X_ERROR_OCCURRED = true;
     0
-}
+}}
 
 /// There's no way to check accesses to destroyed windows, thus those cases are
 /// ignored (especially on UnmapNotify's). Other types of errors call Xlibs
 /// default error handler, which may call exit.
-unsafe extern "C" fn xerror(dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
+unsafe extern "C" fn x_error(_dpy: *mut xlib::Display, ee: *mut xlib::XErrorEvent) -> c_int {
     let ee_ref = unsafe { &*ee };
     if ee_ref.error_code == xlib::BadWindow
         || (ee_ref.request_code == X_SET_INPUT_FOCUS && ee_ref.error_code == xlib::BadMatch)
@@ -98,13 +98,13 @@ pub enum Atom {
     Wm(WM),
 }
 
-struct Fnt {
+pub struct Font {
     pub dpy: *mut xlib::Display,
     pub h: c_uint,
     pub xfont: *mut xft::XftFont,
 }
 
-impl Drop for Fnt {
+impl Drop for Font {
     fn drop(&mut self) {
         unsafe {
             if !self.xfont.is_null() {
@@ -114,7 +114,7 @@ impl Drop for Fnt {
     }
 }
 
-type Clr = xft::XftColor;
+type Color = xft::XftColor;
 
 // Newtype wrapper for Window
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,22 +129,22 @@ impl Default for Window {
     }
 }
 
-pub struct KeySpec {
+pub struct KeySpecification {
     pub mask: u32,
     pub keysym: u32,
 }
 
 pub struct XWrapper {
     dpy: *mut xlib::Display,
-    pub w: c_uint,
-    pub h: c_uint,
+    _w: c_uint,
+    _h: c_uint,
     pub screen: c_int,
-    pub root: xlib::Window,
+    _root: xlib::Window,
     pub drawable: xlib::Drawable,
     gc: xlib::GC,
     xftdraw: *mut XftDraw, // <<< ADDED: Cached XftDraw object
-    pub fonts: Vec<Fnt>,
-    colors: [Clr; ALL_COLOURS.len()],
+    pub fonts: Vec<Font>,
+    colors: [Color; ALL_COLOURS.len()],
     pub atoms: Atoms,
 }
 
@@ -183,10 +183,10 @@ impl XWrapper {
             let atoms = Atoms::new(dpy)?;
             let mut wrapper = Self {
                 dpy,
-                w,
-                h,
+                _w: w,
+                _h: h,
                 screen,
-                root,
+                _root: root,
                 drawable,
                 gc,
                 xftdraw, // <<< ADDED: Store the cached object
@@ -194,12 +194,12 @@ impl XWrapper {
                 colors: [std::mem::zeroed(); ALL_COLOURS.len()],
                 atoms,
             };
-            wrapper.init_colours();
+            wrapper.init_colors();
             Ok(wrapper)
         }
     }
 
-    fn init_colours(&mut self) {
+    fn init_colors(&mut self) {
         for (i, colour) in ALL_COLOURS.iter().enumerate() {
             let rgba = colour.get_colour();
             let mut clr = unsafe { std::mem::zeroed() };
@@ -231,9 +231,11 @@ impl XWrapper {
 
     /// Provides temporary access to the raw display pointer.
     /// This should be phased out as more functionality is moved into the wrapper.
+    /*
     pub fn dpy(&self) -> *mut xlib::Display {
         self.dpy
     }
+    */
 
     pub fn fontset_create(&mut self, font_names: &[&str]) -> bool {
         let mut success = true;
@@ -264,7 +266,7 @@ impl XWrapper {
             }
 
             let h = ((*xfont).ascent + (*xfont).descent) as c_uint;
-            let fnt = Fnt {
+            let fnt = Font {
                 dpy: self.dpy,
                 h,
                 xfont,
@@ -352,11 +354,13 @@ impl XWrapper {
         }
     }
 
+    /*
     pub fn intern_atom(&self, atom_name: &str) -> Result<xlib::Atom, XError> {
         let c_str = CString::new(atom_name)
             .map_err(|_| XError::AtomIntern(atom_name.to_string()))?;
         unsafe { Ok(xlib::XInternAtom(self.dpy, c_str.as_ptr(), 0)) }
     }
+    */
 
     pub fn set_error_handler(
         &self,
@@ -452,6 +456,7 @@ impl XWrapper {
         }
     }
 
+    /*
     pub fn create_font_cursor(&self, shape: u32) -> xlib::Cursor {
         unsafe { xlib::XCreateFontCursor(self.dpy, shape) }
     }
@@ -461,6 +466,7 @@ impl XWrapper {
             xlib::XDefineCursor(self.dpy, win.0, cursor_id.0);
         }
     }
+    */
 
     pub fn create_font_cursor_as_id(&self, shape: u32) -> CursorId {
         CursorId(unsafe { xlib::XCreateFontCursor(self.dpy, shape) })
@@ -693,7 +699,7 @@ impl XWrapper {
         }
     }
 
-    pub fn grab_keys(&self, win: Window, numlockmask: u32, keys: &[KeySpec]) {
+    pub fn grab_keys(&self, win: Window, numlockmask: u32, keys: &[KeySpecification]) {
         unsafe {
             xlib::XUngrabKey(self.dpy, xlib::AnyKey, xlib::AnyModifier, win.0);
 
@@ -869,7 +875,7 @@ impl XWrapper {
     pub fn check_for_other_wm(&mut self) -> Result<(), &str> {
         unsafe {
             X_ERROR_OCCURRED = false;
-            self.set_error_handler(Some(xerror_start));
+            self.set_error_handler(Some(x_error_start));
             let root = self.root_window(self.default_screen());
             self.select_input_for_substructure_redirect(root);
             self.sync(false);
@@ -882,11 +888,11 @@ impl XWrapper {
     }
 
     pub fn set_default_error_handler(&self) {
-        self.set_error_handler(Some(xerror));
+        self.set_error_handler(Some(x_error));
     }
 
     pub fn set_ignore_error_handler(&self) {
-        self.set_error_handler(Some(xerror_ignore));
+        self.set_error_handler(Some(x_error_ignore));
     }
 
     pub fn stack_windows(&self, windows: &[Window]) {
@@ -957,7 +963,7 @@ impl Drop for XWrapper {
 #[derive(Debug)]
 pub enum XError {
     DisplayOpen,
-    AtomIntern(String),
+    AtomIntern(()),
 }
 
 pub struct Atoms {
@@ -974,7 +980,7 @@ impl Atoms {
 
         let intern = |name: &str| -> Result<xlib::Atom, XError> {
             let c_str = CString::new(name)
-                .map_err(|_| XError::AtomIntern(name.to_string()))?;
+                .map_err(|_| XError::AtomIntern(()))?;
             unsafe { Ok(xlib::XInternAtom(dpy, c_str.as_ptr(), 0)) }
         };
 
@@ -1002,7 +1008,7 @@ impl Atoms {
         }
     }
     
-    pub fn netatom_ptr(&self) -> *const xlib::Atom {
+    pub fn net_atom_ptr(&self) -> *const xlib::Atom {
         self.netatom.as_ptr()
     }
 }

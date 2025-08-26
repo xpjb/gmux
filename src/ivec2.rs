@@ -11,12 +11,8 @@ pub fn ivec2(x: i32, y: i32) -> IVec2 {
 }
 
 impl IVec2 {
-    pub fn projx(&self) -> Self {
+    pub fn proj_x(&self) -> Self {
         ivec2(self.x, 0)
-    }
-
-    pub fn projy(&self) -> Self {
-        ivec2(0, self.y)
     }
 }
 
