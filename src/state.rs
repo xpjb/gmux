@@ -9,13 +9,12 @@ use crate::BarState;
 use std::ffi::CString;
 use std::os::raw::c_uchar;
 use std::time::{Duration, Instant};
-use crate::xwrapper::{Atom, CursorId, KeySpecification, Net, Window, XWrapper};
-use crate::state::{Client, Gmux, Monitor};
+use crate::xwrapper::{Atom, Net};
 use crate::config::{KeyBinding, BAR_H_PADDING, BORDER_PX};
-use crate::actions::Action;
 use crate::layouts::LAYOUTS;
 use crate::ivec2::ivec2;
-
+use crate::CursorType;
+use crate::config;
 // Structs
 
 #[derive(Clone, Copy, Debug)]
@@ -419,7 +418,7 @@ impl Gmux {
             
             let fonts = &["monospace:size=12"]; // TODO: configurable
             if !self.xwrapper.fontset_create(fonts) {
-                die("no fonts could be loaded.");
+                panic!("no fonts could be loaded.");
             }
 
             // derive bar height and lr_padding from font height like dwm

@@ -29,11 +29,6 @@ pub enum BarState {
     },
 }
 
-fn die(s: &str) {
-    eprintln!("{}", s);
-    std::process::exit(1);
-}
-
 const TAG_MASK: u32 = (1 << config::TAGS.len()) - 1;
 
 #[derive(PartialEq, Copy, Clone)]
@@ -45,8 +40,6 @@ enum CursorType {
 }
 
 impl Gmux {
-
-    
     fn run(&mut self) {
         self.xwrapper.sync(false);
         while self.running != 0 {
@@ -470,6 +463,6 @@ fn main() {
             gmux.scan();
             gmux.run();
         }
-        Err(e) => die(&e),
+        Err(e) => panic!("{}", e),
     }
 }
