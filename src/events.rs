@@ -23,7 +23,6 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
         let mut x = 0;
         let mut w: i32;
 
-        // Note: The layout symbol also needs padding for correct hit-testing
         w = (state.xwrapper.text_width(&mon.lt_symbol)
             + (config::BAR_H_PADDING * 2)) as i32;
         if ev.x < x + w {
@@ -32,7 +31,6 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
         x += w;
 
         for (i, &tag) in state.tags.iter().enumerate() {
-            // ✅ CORRECTED: Use the same width calculation as in draw_bar
             w = (state.xwrapper.text_width(tag) + (config::BAR_H_PADDING * 2))
                 as i32;
 
@@ -48,8 +46,7 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     None
 }
 
-pub unsafe extern "C" fn button_press(state: &mut Gmux, e: *mut xlib::XEvent) {
-    let ev = unsafe { &mut (*(e as *mut xlib::XButtonPressedEvent)) };
+pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
     let mon_idx = unsafe { state.window_to_monitor(ev.window) };
     if mon_idx != state.selected_monitor {
         state.unfocus(
@@ -66,15 +63,13 @@ pub unsafe extern "C" fn button_press(state: &mut Gmux, e: *mut xlib::XEvent) {
 }
 
 // DestroyNotify handler to unmanage windows
-pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
-    let ev = unsafe { &*(e as *mut xlib::XDestroyWindowEvent) };
+pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
     if let Some((mon_idx, client_idx)) = unsafe { crate::window_to_client_idx(state, ev.window) } {
         crate::unmanage(state, mon_idx, client_idx, true);
     }
 }
 
-pub unsafe extern "C" fn motion_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
-    let ev = unsafe { &mut (*(e as *mut xlib::XMotionEvent)) };
+pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionEvent) {
     if ev.window != state.root.0 {
         return;
     }
@@ -88,15 +83,11 @@ pub unsafe extern "C" fn motion_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
     }
 }
 
-pub unsafe extern "C" fn enter_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
-    println!("enter_notify");
-    let ev = unsafe { &*(e as *mut xlib::XCrossingEvent) };
-
+pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossingEvent) {
     // Ignore non-normal or inferior events (same filtering as dwm)
     if (ev.mode != xlib::NotifyNormal as i32 || ev.detail == xlib::NotifyInferior as i32)
         && ev.window != state.root.0
     {
-        println!("enter_notify mode");
         return;
     }
 
@@ -115,8 +106,7 @@ pub unsafe extern "C" fn enter_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
     }
 }
 
-pub unsafe extern "C" fn map_request(state: &mut Gmux, e: *mut xlib::XEvent) {
-    let ev = unsafe { &mut (*(e as *mut xlib::XMapRequestEvent)) };
+pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapRequestEvent) {
     if let Ok(mut wa) = state.xwrapper.get_window_attributes(crate::xwrapper::Window(ev.window)) {
         if wa.override_redirect != 0 {
             return;
@@ -127,9 +117,7 @@ pub unsafe extern "C" fn map_request(state: &mut Gmux, e: *mut xlib::XEvent) {
     }
 }
 
-pub unsafe extern "C" fn property_notify(state: &mut Gmux, e: *mut xlib::XEvent) {
-    let ev = unsafe { &*(e as *mut xlib::XPropertyEvent) };
-
+pub unsafe extern "C" fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
     // Check if the event is for a window we manage
     if let Some((mon_idx, client_idx)) = unsafe { crate::window_to_client_idx(state, ev.window) } {
         let client = &mut state.mons[mon_idx].clients[client_idx];

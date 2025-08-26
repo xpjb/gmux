@@ -1,11 +1,9 @@
 use crate::state::{Gmux};
-use crate::resize;
-use crate::is_visible;
 
 #[derive(Debug)]
 pub struct Layout {
     pub symbol: &'static str,
-    pub arrange: Option<unsafe extern "C" fn(&mut Gmux, usize)>,
+    pub arrange: Option<fn(&mut Gmux, usize)>,
 }
 
 pub static LAYOUTS: [Layout; 3] = [
@@ -23,13 +21,13 @@ pub static LAYOUTS: [Layout; 3] = [
     },
 ];
 
-unsafe extern "C" fn tile(state: &mut Gmux, mon_idx: usize) {
+fn tile(state: &mut Gmux, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
     let tiled_client_indices: Vec<usize> = mon
         .clients
         .iter()
         .enumerate()
-        .filter(|(_, c)| !c.is_floating && is_visible(c, mon))
+        .filter(|(_, c)| !c.is_floating && c.is_visible_on(mon))
         .map(|(i, _)| i)
         .collect();
     let n = tiled_client_indices.len();
@@ -62,8 +60,7 @@ unsafe extern "C" fn tile(state: &mut Gmux, mon_idx: usize) {
 
         if i < nmaster as usize {
             let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
-            unsafe { resize(
-                state,
+            unsafe { state.resize(
                 mon_idx,
                 client_idx,
                 wx,
@@ -77,8 +74,7 @@ unsafe extern "C" fn tile(state: &mut Gmux, mon_idx: usize) {
             }
         } else {
             let h = (wh - ty) / (n - i) as i32;
-            unsafe { resize(
-                state,
+            unsafe { state.resize(
                 mon_idx,
                 client_idx,
                 wx + mw,
@@ -94,13 +90,13 @@ unsafe extern "C" fn tile(state: &mut Gmux, mon_idx: usize) {
     }
 }
 
-unsafe extern "C" fn monocle(state: &mut Gmux, mon_idx: usize) {
+fn monocle(state: &mut Gmux, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
     let tiled_client_indices: Vec<usize> = mon
         .clients
         .iter()
         .enumerate()
-        .filter(|(_, c)| !c.is_floating && is_visible(c, mon))
+        .filter(|(_, c)| !c.is_floating && c.is_visible_on(mon))
         .map(|(i, _)| i)
         .collect();
 
@@ -111,8 +107,7 @@ unsafe extern "C" fn monocle(state: &mut Gmux, mon_idx: usize) {
 
     for &client_idx in &tiled_client_indices {
         let client_bw = state.mons[mon_idx].clients[client_idx].bw;
-        unsafe { resize(
-            state,
+        unsafe { state.resize(
             mon_idx,
             client_idx,
             wx,

@@ -1,11 +1,9 @@
 use crate::command::Command;
 use crate::state::Gmux;
 use crate::layouts::Layout;
-use std::ffi::CString;
-use std::os::raw::c_char;
-use std::ptr::null_mut;
 use x11::xlib;
 use crate::TAG_MASK;
+use crate::utils;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
@@ -34,21 +32,7 @@ impl Action {
     pub fn execute(&self, state: &mut Gmux) {
         match self {
             Action::Spawn(cmd) => {
-                if unsafe { libc::fork() } == 0 {
-                    unsafe {
-                        libc::setsid();
-                        let shell = CString::new("/bin/sh").unwrap();
-                        let c_flag = CString::new("-c").unwrap();
-                        let cmd_str = CString::new(cmd.str()).unwrap();
-                        libc::execlp(
-                            shell.as_ptr(),
-                            shell.as_ptr(),
-                            c_flag.as_ptr(),
-                            cmd_str.as_ptr(),
-                            null_mut::<c_char>(),
-                        );
-                    }
-                }
+                utils::spawn(cmd);
             }
             Action::ToggleBar => {
                 let selmon_idx = state.selected_monitor;
@@ -69,7 +53,7 @@ impl Action {
                     .clients
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| crate::is_visible(c, selmon))
+                    .filter(|(_, c)| c.is_visible_on(selmon))
                     .map(|(i, _)| i)
                     .collect();
                 if visible_clients_indices.is_empty() {
@@ -131,7 +115,7 @@ impl Action {
                         .clients
                         .iter()
                         .enumerate()
-                        .filter(|(_, cl)| !cl.is_floating && crate::is_visible(cl, &state.mons[selmon_idx]))
+                        .filter(|(_, cl)| !cl.is_floating && cl.is_visible_on(&state.mons[selmon_idx]))
                         .map(|(i, _)| i)
                         .collect();
                     if let Some(pos) = tiled_clients_indices.iter().position(|&i| i == sel_idx) {

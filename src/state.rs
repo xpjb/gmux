@@ -33,6 +33,18 @@ pub struct Monitor {
     pub lt: [&'static Layout; 2],
 }
 
+impl Monitor {
+    pub fn intersect_area(&self, x: i32, y: i32, w: i32, h: i32) -> i32 {
+        std::cmp::max(
+            0,
+            std::cmp::min(x + w, self.wx + self.ww) - std::cmp::max(x, self.wx),
+        ) * std::cmp::max(
+            0,
+            std::cmp::min(y + h, self.wy + self.wh) - std::cmp::max(y, self.wy),
+        )
+    }
+}
+
 impl Default for Monitor {
     fn default() -> Self {
         Monitor {
@@ -97,6 +109,16 @@ pub struct Client {
     pub win: Window,
 }
 
+impl Client {
+    pub fn width(&self) -> i32 {
+        self.w + 2 * self.bw
+    }
+
+    pub fn is_visible_on(&self, m: &Monitor) -> bool {
+        (self.tags & m.tagset[m.selected_tags as usize]) != 0
+    }
+}
+
 // Global state
 pub struct Gmux {
     pub status_text: String,
@@ -142,7 +164,7 @@ impl Gmux {
         let mut r = self.selected_monitor;
         let mut area = 0;
         for (i, m) in self.mons.iter().enumerate() {
-            let a = crate::intersect(x, y, w, h, m) as i32;
+            let a = m.intersect_area(x, y, w, h) as i32;
             if a > area {
                 area = a;
                 r = i;
@@ -164,7 +186,7 @@ impl Gmux {
                 // Check if the current selection is still visible.
                 let current_sel_is_visible = mon.sel
                     .and_then(|s_idx| mon.clients.get(s_idx)) // Safely get the client
-                    .map(|s_client| crate::is_visible(s_client, mon))
+                    .map(|s_client| s_client.is_visible_on(mon))
                     .unwrap_or(false);
     
                 if current_sel_is_visible {
@@ -174,7 +196,7 @@ impl Gmux {
                     // Otherwise, find the first visible client and select it.
                     // If no client is visible, this will be `None`.
                     mon.clients.iter().enumerate()
-                        .find(|(_, c)| crate::is_visible(c, mon))
+                        .find(|(_, c)| c.is_visible_on(mon))
                         .map(|(i, _)| i)
                 }
             };
@@ -206,7 +228,7 @@ impl Gmux {
         if let Some(mon) = self.mons.get(mon_idx) {
             let layout = mon.lt[mon.selected_lt as usize];
             if let Some(arrange_fn) = layout.arrange {
-                unsafe { arrange_fn(self, mon_idx) };
+                arrange_fn(self, mon_idx);
             }
         }
     }
@@ -228,7 +250,7 @@ impl Gmux {
 
             for &c_idx in &m.stack {
                 let c = &m.clients[c_idx];
-                if !c.is_floating && crate::is_visible(c, m) {
+                if !c.is_floating && c.is_visible_on(m) {
                     windows_to_stack.push(c.win);
                 }
             }
@@ -258,7 +280,7 @@ impl Gmux {
             }
             // detachstack(c);
             // attachstack(c);
-            crate::grab_buttons(self, new_mon_idx, idx, true);
+            self.grab_buttons(new_mon_idx, idx, true);
             let keys = crate::config::grab_keys();
             let key_specs: Vec<KeySpecification> = keys
                 .iter()
@@ -289,7 +311,7 @@ impl Gmux {
             return;
         }
         let c_win = self.mons[mon_idx].clients[c_idx].win;
-        crate::grab_buttons(self, mon_idx, c_idx, false);
+        self.grab_buttons(mon_idx, c_idx, false);
         self.xwrapper.ungrab_keys(c_win);
         self.xwrapper.set_window_border_color(c_win, Colour::WindowInactive);
         if setfocus {
@@ -298,5 +320,29 @@ impl Gmux {
                 .set_input_focus(self.root, xlib::RevertToPointerRoot);
             // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
         }
+    }
+
+    pub unsafe fn resize(&mut self, mon_idx: usize, client_idx: usize, x: i32, y: i32, w: i32, h: i32, _interact: bool) {
+        let client = &mut self.mons[mon_idx].clients[client_idx];
+        client.oldx = client.x;
+        client.x = x;
+        client.oldy = client.y;
+        client.y = y;
+        client.oldw = client.w;
+        client.w = w;
+        client.oldh = client.h;
+        client.h = h;
+        self.xwrapper.configure_window(
+            client.win,
+            client.x,
+            client.y,
+            client.w,
+            client.h,
+            crate::config::BORDER_PX,
+        );
+    }
+
+    fn grab_buttons(&mut self, _mon_idx: usize, _c_idx: usize, _focused: bool) {
+        // For now, this is a stub
     }
 }

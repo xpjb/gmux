@@ -801,14 +801,19 @@ impl XWrapper {
         unsafe { xlib::XSync(self.dpy, if discard { 1 } else { 0 }) };
     }
 
-    pub fn next_event(&self) -> Option<xlib::XEvent> {
-        unsafe {
-            let mut ev: xlib::XEvent = std::mem::zeroed();
-            if xlib::XNextEvent(self.dpy, &mut ev) == 0 {
-                Some(ev)
-            } else {
-                None
-            }
+    pub fn next_event(&self) -> Option<Event> {
+        let mut ev = unsafe { std::mem::zeroed() };
+        unsafe { xlib::XNextEvent(self.dpy, &mut ev) };
+        let event_type = ev.get_type();
+        match event_type {
+            xlib::KeyPress => Some(Event::KeyPress(unsafe { ev.key })),
+            xlib::ButtonPress => Some(Event::ButtonPress(unsafe { ev.button })),
+            xlib::MotionNotify => Some(Event::MotionNotify(unsafe { ev.motion })),
+            xlib::MapRequest => Some(Event::MapRequest(unsafe { ev.map_request })),
+            xlib::DestroyNotify => Some(Event::DestroyNotify(unsafe { ev.destroy_window })),
+            xlib::EnterNotify => Some(Event::EnterNotify(unsafe { ev.crossing })),
+            xlib::PropertyNotify => Some(Event::PropertyNotify(unsafe { ev.property })),
+            _ => Some(Event::Unknown),
         }
     }
 
@@ -964,6 +969,18 @@ impl Drop for XWrapper {
 pub enum XError {
     DisplayOpen,
     AtomIntern(()),
+}
+
+#[derive(Debug)]
+pub enum Event {
+    KeyPress(xlib::XKeyEvent),
+    ButtonPress(xlib::XButtonPressedEvent),
+    MotionNotify(xlib::XMotionEvent),
+    MapRequest(xlib::XMapRequestEvent),
+    DestroyNotify(xlib::XDestroyWindowEvent),
+    EnterNotify(xlib::XCrossingEvent),
+    PropertyNotify(xlib::XPropertyEvent),
+    Unknown,
 }
 
 pub struct Atoms {

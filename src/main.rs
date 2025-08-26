@@ -12,6 +12,7 @@ mod config;
 mod layouts;
 mod actions;
 mod events;
+mod utils;
 
 use colour::Colour;
 use xwrapper::{Atom, CursorId, KeySpecification, Net, Window, XWrapper};
@@ -121,7 +122,7 @@ fn client_at_pos(state: &Gmux, x: i32, y: i32) -> Option<(usize, usize)> {
     for (mon_idx, m) in state.mons.iter().enumerate() {
         for (client_idx, c) in m.clients.iter().enumerate() {
             // Check only visible clients
-            if is_visible(c, m) && (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
+            if c.is_visible_on(m) && (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
                 return Some((mon_idx, client_idx));
             }
         }
@@ -270,20 +271,20 @@ const TAG_MASK: u32 = (1 << config::TAGS.len()) - 1;
 fn show_hide(state: &mut Gmux, mon_idx: usize, stack: &[usize]) {
     for &c_idx in stack.iter().rev() {
         let c = &state.mons[mon_idx].clients[c_idx];
-        if is_visible(c, &state.mons[c.monitor_idx]) {
+        if c.is_visible_on(&state.mons[c.monitor_idx]) {
             state.xwrapper.move_window(c.win, c.x, c.y);
             if state.mons[c.monitor_idx].lt[state.mons[c.monitor_idx].selected_lt as usize].arrange.is_none()
                 || c.is_floating && !c.is_fullscreen
             {
-                unsafe { resize(state, c.monitor_idx, c_idx, c.x, c.y, c.w, c.h, false) };
+                unsafe { state.resize(c.monitor_idx, c_idx, c.x, c.y, c.w, c.h, false) };
             }
         }
     }
 
     for &c_idx in stack {
         let c = &state.mons[mon_idx].clients[c_idx];
-        if !is_visible(c, &state.mons[c.monitor_idx]) {
-            state.xwrapper.move_window(c.win, -2 * client_width(c), c.y);
+        if !c.is_visible_on(&state.mons[c.monitor_idx]) {
+            state.xwrapper.move_window(c.win, -2 * c.width(), c.y);
         }
     }
 }
@@ -490,58 +491,6 @@ unsafe fn window_to_client_idx(state: &Gmux, w: xlib::Window) -> Option<(usize, 
     None
 }
 
-fn intersect(x: i32, y: i32, w: i32, h: i32, m: &Monitor) -> i32 {
-    std::cmp::max(
-        0,
-        std::cmp::min(x + w, m.wx + m.ww) - std::cmp::max(x, m.wx),
-    ) * std::cmp::max(
-        0,
-        std::cmp::min(y + h, m.wy + m.wh) - std::cmp::max(y, m.wy),
-    )
-}
-
-
-
-fn grab_buttons(_state: &mut Gmux, _mon_idx: usize, _c_idx: usize, _focused: bool) {
-    // For now, this is a stub
-}
-
-
-// Helper functions for layouts
-
-unsafe fn resize(
-    state: &mut Gmux,
-    mon_idx: usize,
-    client_idx: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    _interact: bool,
-) {
-    let client = &mut state.mons[mon_idx].clients[client_idx];
-    client.oldx = client.x;
-    client.x = x;
-    client.oldy = client.y;
-    client.y = y;
-    client.oldw = client.w;
-    client.w = w;
-    client.oldh = client.h;
-    client.h = h;
-    state.xwrapper.configure_window(
-        client.win,
-        client.x,
-        client.y,
-        client.w,
-        client.h,
-        BORDER_PX,
-    );
-}
-
-fn is_visible(c: &Client, m: &Monitor) -> bool {
-    (c.tags & m.tagset[m.selected_tags as usize]) != 0
-}
-
 fn scan(state: &mut Gmux) {
     if let Ok((_, _, wins)) = state.xwrapper.query_tree(state.root) {
         for &win in &wins {
@@ -558,22 +507,19 @@ fn scan(state: &mut Gmux) {
 fn run(state: &mut Gmux) {
     state.xwrapper.sync(false);
     while state.running != 0 {
-        if let Some(mut ev) = state.xwrapper.next_event() {
-            let event_type = ev.get_type();
-            match event_type {
-                xlib::KeyPress => {
-                    let kev = unsafe { &*(ev.as_mut() as *mut _ as *mut xlib::XKeyEvent) };
-                    if let Some(action) = events::parse_key_press(state, kev) {
+        if let Some(ev) = state.xwrapper.next_event() {
+            match ev {
+                xwrapper::Event::KeyPress(kev) => {
+                    if let Some(action) = events::parse_key_press(state, &kev) {
                         action.execute(state);
                     }
                 }
-                xlib::ButtonPress => unsafe { events::button_press(state, &mut ev) },
-                xlib::MotionNotify => unsafe { events::motion_notify(state, &mut ev) },
-                xlib::MapRequest => unsafe { events::map_request(state, &mut ev) },
-                xlib::DestroyNotify => unsafe { events::destroy_notify(state, &mut ev) },
-                xlib::EnterNotify => unsafe { events::enter_notify(state, &mut ev) },
-                xlib::PropertyNotify => unsafe { events::property_notify(state, &mut ev) },
-
+                xwrapper::Event::ButtonPress(mut bev) => unsafe { events::button_press(state, &mut bev) },
+                xwrapper::Event::MotionNotify(mut mev) => unsafe { events::motion_notify(state, &mut mev) },
+                xwrapper::Event::MapRequest(mut mrev) => unsafe { events::map_request(state, &mut mrev) },
+                xwrapper::Event::DestroyNotify(mut drev) => unsafe { events::destroy_notify(state, &mut drev) },
+                xwrapper::Event::EnterNotify(mut erev) => unsafe { events::enter_notify(state, &mut erev) },
+                xwrapper::Event::PropertyNotify(mut prev) => unsafe { events::property_notify(state, &mut prev) },
                 _ => (),
             }
         }
@@ -591,10 +537,6 @@ fn cleanup(state: &mut Gmux) {
     state.xwrapper.ungrab_key(state.root);
 }
 
-
-fn client_width(c: &Client) -> i32 {
-    c.w + 2 * c.bw
-}
 
 fn main() {
     println!("Starting gmux...");
