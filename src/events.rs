@@ -20,14 +20,36 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     let mon = &state.mons[mon_idx];
 
     if ev.window == mon.bar_window.0 {
+        // Find what was clicked, if anything
         for clickable in &mon.clickables {
             if ev.x >= clickable.pos.x && ev.x < clickable.pos.x + clickable.size.x {
-                return Some(clickable.action);
+                // This is the clickable element that was clicked
+                match clickable.action {
+                    Action::ViewTag(_, _) => {
+                        // It's a tag
+                        match ev.button {
+                            1 => return Some(clickable.action), // Left click
+                            4 => return Some(Action::CycleTag(-1)), // Scroll up
+                            5 => return Some(Action::CycleTag(1)), // Scroll down
+                            _ => return None, // Other clicks on tags do nothing
+                        }
+                    },
+                    _ => { // Not a tag
+                        if ev.button == 1 {
+                            return Some(clickable.action); // Left click for other elements
+                        } else {
+                            return None;
+                        }
+                    }
+                }
             }
         }
-        return None;
+        return None; // Click was on the bar, but not on a clickable element
+
     } else if let Some((m_idx, c_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
-        return Some(Action::FocusClient(m_idx, c_idx));
+        if ev.button == 1 {
+            return Some(Action::FocusClient(m_idx, c_idx));
+        }
     }
     None
 }

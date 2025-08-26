@@ -78,23 +78,8 @@ pub fn grab_keys() -> Vec<KeyBinding> {
     });
     keys.push(KeyBinding {
         mask: xlib::Mod1Mask,
-        keysym: keysym::XK_t,
-        action: Action::SetLayout(&crate::layouts::LAYOUTS[0]),
-    });
-    keys.push(KeyBinding {
-        mask: xlib::Mod1Mask,
-        keysym: keysym::XK_f,
-        action: Action::SetLayout(&crate::layouts::LAYOUTS[1]),
-    });
-    keys.push(KeyBinding {
-        mask: xlib::Mod1Mask,
-        keysym: keysym::XK_m,
-        action: Action::SetLayout(&crate::layouts::LAYOUTS[2]),
-    });
-    keys.push(KeyBinding {
-        mask: xlib::Mod1Mask,
         keysym: keysym::XK_space,
-        action: Action::ToggleLayout(None),
+        action: Action::SetLayout(&crate::layouts::LAYOUTS[0]),
     });
     keys.push(KeyBinding {
         mask: xlib::Mod1Mask | xlib::ShiftMask,

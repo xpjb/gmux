@@ -229,15 +229,15 @@ impl Gmux {
 
     // --- 2. Render Left-aligned elements (Layout Symbol, Tags) ---
 
-    // Calculate occupied and urgent tags
-    let mut occ: u32 = 0;
-    let mut urg: u32 = 0;
-    for c in &mon.clients {
-        occ |= c.tags;
-        if c.is_urgent {
-            urg |= c.tags;
+        // Calculate occupied and urgent tags
+        let mut occ: u32 = 0;
+        let mut urg: u32 = 0;
+        for c in &mon.clients {
+            occ |= c.tags;
+            if c.is_urgent {
+                urg |= c.tags;
+            }
         }
-    }
 
     // Draw tags
         for i in 0..self.tags.len() {

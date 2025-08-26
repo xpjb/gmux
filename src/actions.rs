@@ -4,8 +4,9 @@ use crate::layouts::Layout;
 use x11::xlib;
 use crate::TAG_MASK;
 use crate::utils;
+use crate::config;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Action {
     Spawn(&'static Command),
     ToggleBar,
@@ -17,7 +18,6 @@ pub enum Action {
     ViewPrevTag,
     KillClient,
     SetLayout(&'static Layout),
-    ToggleLayout(Option<usize>),
     ToggleFloating,
     Tag(u32),
     FocusMon(i32),
@@ -25,6 +25,7 @@ pub enum Action {
     Quit,
     ToggleView(u32),
     ToggleTag(u32),
+    CycleTag(i32),
     FocusClient(usize, usize),
 }
 
@@ -182,25 +183,6 @@ impl Action {
                     state.arrange(Some(selmon_idx));
                 }
             }
-            Action::ToggleLayout(opt_mon_idx) => {
-                let mon_idx = match opt_mon_idx {
-                    Some(idx) => {
-                        if *idx != state.selected_monitor {
-                            let last_sel = state.mons[*idx].sel;
-                            state.focus(*idx, last_sel);
-                        }
-                        *idx
-                    }
-                    None => state.selected_monitor,
-                };
-                let mon = &mut state.mons[mon_idx];
-                mon.selected_lt ^= 1;
-                let symbol = mon.lt[mon.selected_lt as usize].symbol;
-                mon.lt_symbol = symbol.to_string();
-                if mon.sel.is_some() {
-                    state.arrange(Some(mon_idx));
-                }
-            }
             Action::ToggleFloating => {
                 let selmon_idx = state.selected_monitor;
                 if let Some(sel_idx) = state.mons[selmon_idx].sel {
@@ -270,6 +252,24 @@ impl Action {
                         state.arrange(Some(selmon_idx));
                     }
                 }
+            }
+            Action::CycleTag(direction) => {
+                let selmon_idx = state.selected_monitor;
+                let mon = &mut state.mons[selmon_idx];
+                let tagset = mon.tagset[mon.selected_tags as usize];
+
+                let num_tags = config::TAGS.len() as i32;
+                let new_tag_idx = if tagset == 0 {
+                    if *direction > 0 { 0 } else { num_tags - 1 }
+                } else if tagset.count_ones() == 1 {
+                    let current_tag_idx = tagset.trailing_zeros() as i32;
+                    (current_tag_idx + direction + num_tags) % num_tags
+                } else {
+                    return; // More than one tag selected, do nothing.
+                };
+
+                mon.tagset[mon.selected_tags as usize] = 1 << new_tag_idx;
+                state.arrange(Some(selmon_idx));
             }
             Action::FocusClient(mon_idx, client_idx) => {
                 state.focus(*mon_idx, Some(*client_idx));
