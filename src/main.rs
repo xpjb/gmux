@@ -55,7 +55,7 @@ impl Gmux {
     pub fn set_error_state(&mut self, error_msg: String) {
         self.bar_state = BarState::ErrorDisplay {
             message: error_msg,
-            expiry: Instant::now() + Duration::from_secs(5),
+            expiry: Instant::now() + Duration::from_secs(1),
         };
         self.draw_bars(); // Redraw immediately to show the error
     }

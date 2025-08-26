@@ -25,6 +25,7 @@ impl Gmux {
         }
     }
     pub fn draw_bars(&mut self) {
+        self.update_bars();
         for i in 0..self.mons.len() {
             self.draw_bar(i);
         }
