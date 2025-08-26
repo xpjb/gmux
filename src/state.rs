@@ -5,6 +5,7 @@ use x11::xlib;
 use crate::Colour;
 use crate::ivec2::IVec2;
 use crate::actions::Action;
+use crate::BarState;
 
 // Structs
 
@@ -149,6 +150,7 @@ pub struct Gmux {
     pub wm_check_window: Window,
     pub _xerror: bool,
     pub tags: [&'static str; 9],
+    pub bar_state: BarState,
 }
 
 impl Gmux {

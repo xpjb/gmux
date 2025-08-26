@@ -7,6 +7,7 @@ pub enum Colour {
     TextQuiet,
     WindowActive,
     WindowInactive,
+    Urgent,
     DebugRed,
 }
 
@@ -19,17 +20,19 @@ impl Colour {
             Colour::TextQuiet => [102, 102, 102, 255],
             Colour::WindowActive => [255, 255, 0, 255],
             Colour::WindowInactive => [50, 50, 50, 255],
+            Colour::Urgent => [255, 0, 0, 255], // Using red for urgent
             Colour::DebugRed => [255, 0, 0, 255],
         }
     }
 }
 
-pub const ALL_COLOURS: [Colour; 7] = [
+pub const ALL_COLOURS: [Colour; 8] = [
     Colour::BarBackground,
     Colour::BarForeground,
     Colour::TextNormal,
     Colour::TextQuiet,
     Colour::WindowActive,
     Colour::WindowInactive,
+    Colour::Urgent,
     Colour::DebugRed,
 ];

@@ -27,6 +27,7 @@ pub enum Action {
     ToggleTag(u32),
     CycleTag(i32),
     FocusClient(usize, usize),
+    TestError,
 }
 
 impl Action {
@@ -275,6 +276,9 @@ impl Action {
                 state.focus(*mon_idx, Some(*client_idx));
                 state.restack(state.selected_monitor);
                 state.xwrapper.allow_events(xlib::ReplayPointer);
+            }
+            Action::TestError => {
+                state.set_error_state("This is a test error!".to_string());
             }
         }
     }

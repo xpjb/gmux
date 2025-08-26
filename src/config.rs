@@ -122,6 +122,11 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         action: Action::Quit,
     });
     keys.push(KeyBinding {
+        mask: xlib::Mod1Mask | xlib::ShiftMask,
+        keysym: keysym::XK_e,
+        action: Action::TestError,
+    });
+    keys.push(KeyBinding {
         mask: 0,
         keysym: keysym::XK_Print,
         action: Action::Spawn(&Command::Screenshot),

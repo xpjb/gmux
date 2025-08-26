@@ -1,5 +1,6 @@
 use std::ffi::CString;
 use std::os::raw::c_uchar;
+use std::time::{Duration, Instant};
 use x11::xlib;
 use crate::ivec2::ivec2;
 
@@ -20,6 +21,14 @@ use state::{Client, Gmux, Monitor};
 use config::{KeyBinding, BAR_H_PADDING, BORDER_PX};
 use actions::Action;
 use layouts::LAYOUTS;
+
+pub enum BarState {
+    Normal,
+    ErrorDisplay {
+        message: String,
+        expiry: Instant,
+    },
+}
 
 fn die(s: &str) {
     eprintln!("{}", s);
@@ -70,6 +79,7 @@ impl Gmux {
             wm_check_window: Window(0),
             _xerror: false,
             tags: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+            bar_state: BarState::Normal,
             xwrapper,
         };
 
@@ -195,6 +205,12 @@ impl Gmux {
     fn run(&mut self) {
         self.xwrapper.sync(false);
         while self.running != 0 {
+            if let BarState::ErrorDisplay { expiry, .. } = self.bar_state {
+                if Instant::now() >= expiry {
+                    self.bar_state = BarState::Normal;
+                    self.draw_bars();
+                }
+            }
             if let Some(ev) = self.xwrapper.next_event() {
                 match ev {
                     xwrapper::Event::KeyPress(kev) => {
@@ -215,6 +231,19 @@ impl Gmux {
     }
 
     fn draw_bar(&mut self, mon_idx: usize) {
+        // We clone the message to avoid borrowing issues with `self`
+        let message = match &self.bar_state {
+            BarState::ErrorDisplay { message, .. } => Some(message.clone()),
+            _ => None,
+        };
+
+        match self.bar_state {
+            BarState::Normal => self.draw_normal_bar(mon_idx),
+            BarState::ErrorDisplay { .. } => self.draw_error_bar(mon_idx, &message.unwrap()),
+        }
+    }
+
+    fn draw_normal_bar(&mut self, mon_idx: usize) {
         let mon = &mut self.mons[mon_idx];
         mon.clickables.clear();
 
@@ -306,13 +335,36 @@ impl Gmux {
     // --- 5. Map the drawing buffer to the screen ---
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
     }
-    
-    
+
+    fn draw_error_bar(&mut self, mon_idx: usize, message: &str) {
+        let mon = &mut self.mons[mon_idx];
+        let bar_wh = ivec2(mon.ww, self.bar_height);
+        let barwin = mon.bar_window;
+
+        // 1. Clear bar with error color
+        self.xwrapper.rect(Colour::Urgent, ivec2(0, 0), bar_wh, true);
+
+        // 2. Draw centered text
+        self.xwrapper.text(Colour::TextNormal, ivec2(0, 0), bar_wh, BAR_H_PADDING, message);
+
+        // 3. Map to screen
+        self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
+    }
+
+
     fn draw_bars(&mut self) {
         for i in 0..self.mons.len() {
             self.draw_bar(i);
     }
 }
+
+    pub fn set_error_state(&mut self, error_msg: String) {
+        self.bar_state = BarState::ErrorDisplay {
+            message: error_msg,
+            expiry: Instant::now() + Duration::from_secs(5),
+        };
+        self.draw_bars(); // Redraw immediately to show the error
+    }
 
 /// Finds a client by its absolute (x, y) coordinates on the screen.
     fn client_at_pos(&self, x: i32, y: i32) -> Option<(usize, usize)> {
