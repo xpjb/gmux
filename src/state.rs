@@ -153,7 +153,7 @@ impl Gmux {
                 return i;
             }
         }
-        if let Some((mon_idx, _)) = unsafe { crate::window_to_client_idx(self, w) } {
+        if let Some((mon_idx, _)) = unsafe { self.window_to_client_idx(w) } {
             return mon_idx;
         }
         self.selected_monitor
@@ -176,7 +176,7 @@ impl Gmux {
     pub fn arrange(&mut self, mon_idx: Option<usize>) {
         if let Some(idx) = mon_idx {
             let stack = self.mons[idx].stack.clone();
-            crate::show_hide(self, idx, &stack);
+            self.show_hide(idx, &stack);
             self.arrange_monitor(idx);
     
             // ======================== NEW LOGIC START ========================
@@ -214,7 +214,7 @@ impl Gmux {
             // arrange operations to update focus correctly.
             for i in 0..self.mons.len() {
                 let stack = self.mons[i].stack.clone();
-                crate::show_hide(self, i, &stack);
+                self.show_hide(i, &stack);
                 self.arrange_monitor(i);
             }
             for i in 0..self.mons.len() {
@@ -235,7 +235,7 @@ impl Gmux {
 
     
     pub fn restack(&mut self, mon_idx: usize) {
-        crate::draw_bar(self, mon_idx);
+        self.draw_bar(mon_idx);
         if let Some(m) = self.mons.get(mon_idx) {
             if m.sel.is_none() {
                 return;
@@ -303,7 +303,7 @@ impl Gmux {
             // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
         }
         self.mons[self.selected_monitor].sel = c_idx;
-        crate::draw_bars(self);
+        self.draw_bars();
     }
     
     pub fn unfocus(&mut self, mon_idx: usize, c_idx: usize, setfocus: bool) {
@@ -344,5 +344,6 @@ impl Gmux {
 
     fn grab_buttons(&mut self, _mon_idx: usize, _c_idx: usize, _focused: bool) {
         // For now, this is a stub
+        // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
     }
 }

@@ -121,10 +121,10 @@ impl Action {
                     if let Some(pos) = tiled_clients_indices.iter().position(|&i| i == sel_idx) {
                         if pos == 0 {
                             if tiled_clients_indices.len() > 1 {
-                                crate::pop(state, selmon_idx, tiled_clients_indices[1]);
+                                state.pop(selmon_idx, tiled_clients_indices[1]);
                             }
                         } else {
-                            crate::pop(state, selmon_idx, sel_idx);
+                            state.pop(selmon_idx, sel_idx);
                         }
                     }
                 }

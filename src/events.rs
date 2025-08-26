@@ -40,7 +40,7 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
             x += w;
         }
         return None;
-    } else if let Some((m_idx, c_idx)) = unsafe { crate::window_to_client_idx(state, ev.window) } {
+    } else if let Some((m_idx, c_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
         return Some(Action::FocusClient(m_idx, c_idx));
     }
     None
@@ -64,8 +64,8 @@ pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPr
 
 // DestroyNotify handler to unmanage windows
 pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
-    if let Some((mon_idx, client_idx)) = unsafe { crate::window_to_client_idx(state, ev.window) } {
-        crate::unmanage(state, mon_idx, client_idx, true);
+    if let Some((mon_idx, client_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
+        state.unmanage(mon_idx, client_idx, true);
     }
 }
 
@@ -93,14 +93,12 @@ pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossing
 
     // First, try to find the client by the event's window ID.
     // If that fails, it might be a root window event, so find the client by cursor position.
-    let client_info = unsafe { crate::window_to_client_idx(state, ev.window) }
-        .or_else(|| crate::client_at_pos(state, ev.x_root, ev.y_root));
+    let client_info = unsafe { state.window_to_client_idx(ev.window) }
+        .or_else(|| state.client_at_pos(ev.x_root, ev.y_root));
 
     if let Some((mon_idx, client_idx)) = client_info {
-        println!("enter_notify client found");
         // Check if the found client is already selected on its monitor
         if Some(client_idx) != state.mons[mon_idx].sel {
-            println!("enter_notify focusing new client");
             state.focus(mon_idx, Some(client_idx));
         }
     }
@@ -111,15 +109,15 @@ pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapReques
         if wa.override_redirect != 0 {
             return;
         }
-        if unsafe { crate::window_to_client_idx(state, ev.window) }.is_none() {
-            unsafe { crate::manage(state, ev.window, &mut wa) };
+        if unsafe { state.window_to_client_idx(ev.window) }.is_none() {
+            unsafe { state.manage(ev.window, &mut wa) };
         }
     }
 }
 
 pub unsafe extern "C" fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
     // Check if the event is for a window we manage
-    if let Some((mon_idx, client_idx)) = unsafe { crate::window_to_client_idx(state, ev.window) } {
+    if let Some((mon_idx, client_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
         let client = &mut state.mons[mon_idx].clients[client_idx];
 
         // We only care about name changes.
@@ -134,7 +132,7 @@ pub unsafe extern "C" fn property_notify(state: &mut Gmux, ev: &mut xlib::XPrope
                     client.name = new_name;
                     // Redraw the bar for the monitor this client is on
                     let mon_idx = client.monitor_idx;
-                    crate::draw_bar(state, mon_idx);
+                    state.draw_bar(mon_idx);
                 }
             }
         }

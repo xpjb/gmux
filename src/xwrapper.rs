@@ -877,7 +877,7 @@ impl XWrapper {
         }
     }
 
-    pub fn check_for_other_wm(&mut self) -> Result<(), &str> {
+    pub fn check_for_other_wm(&mut self) -> Result<(), String> {
         unsafe {
             X_ERROR_OCCURRED = false;
             self.set_error_handler(Some(x_error_start));
@@ -886,7 +886,7 @@ impl XWrapper {
             self.sync(false);
 
             if X_ERROR_OCCURRED {
-                return Err("another window manager is already running");
+                return Err("another window manager is already running".to_string());
             }
         }
         Ok(())
