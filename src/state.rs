@@ -5,7 +5,7 @@ use x11::xlib;
 use crate::Colour;
 use crate::ivec2::IVec2;
 use crate::actions::Action;
-use crate::BarState;
+use crate::bar::BarState;
 use std::ffi::CString;
 use std::os::raw::c_uchar;
 use crate::xwrapper::{Atom, Net};
