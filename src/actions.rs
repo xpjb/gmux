@@ -1,8 +1,5 @@
-use crate::state::Gmux;
-use crate::layouts::Layout;
 use x11::xlib;
-use crate::TAG_MASK;
-use crate::config;
+use crate::*;
 
 #[derive(Clone, Debug)]
 pub enum Action {

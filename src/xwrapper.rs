@@ -5,6 +5,7 @@ use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 use crate::colour::{ALL_COLOURS, Colour};
 use crate::ivec2::IVec2;
+pub use x11::xlib::XID;
 
 fn die(s: &str) {
     eprintln!("{}", s);

@@ -1,19 +1,7 @@
 use std::os::raw::{c_int, c_uint};
-use crate::layouts::Layout;
-use crate::xwrapper::{CursorId, Window, XWrapper, KeySpecification};
-use crate::Colour;
-use crate::ivec2::IVec2;
-use crate::actions::Action;
-use crate::bar::BarState;
 use std::ffi::CString;
 use std::os::raw::c_uchar;
-use crate::xwrapper::{Atom, Net};
-use crate::config::KeyBinding;
-use crate::layouts::LAYOUTS;
-use crate::CursorType;
-use crate::config;
 use std::sync::mpsc::{Sender, Receiver};
-use crate::error::GmuxError;
 use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -21,11 +9,8 @@ use std::env;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use x11::{keysym, xlib};
-use crate::monitor::Monitor;
-use crate::client::Client;
 
-// Structs
-
+use crate::*;
 
 // Global state
 pub struct Gmux {

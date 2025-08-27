@@ -1,6 +1,4 @@
-use crate::actions::Action;
-use crate::config;
-use crate::state::Gmux;
+use crate::*;
 use x11::xlib;
 
 pub fn parse_key_press(state: &Gmux, ev: &xlib::XKeyEvent) -> Option<Action> {
