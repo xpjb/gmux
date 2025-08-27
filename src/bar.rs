@@ -7,6 +7,8 @@ use crate::config::BAR_H_PADDING;
 use crate::actions::Action;
 use crate::state;
 
+pub const LAUNCHER_PROPORTION: f32 = 0.381953;
+
 #[derive(Clone)]
 pub enum BarState {
     Normal,
@@ -169,7 +171,7 @@ impl Gmux {
 
         let prompt_text = format!("{}{}", prompt, input);
         let text_w = self.xwrapper.text_width(&prompt_text) + (BAR_H_PADDING * 2);
-        let min_prompt_w = (0.381953 * mon.ww as f32) as u32;
+        let min_prompt_w = (LAUNCHER_PROPORTION * mon.ww as f32) as u32;
         let prompt_w = std::cmp::max(text_w, min_prompt_w);
         self.xwrapper.text(
             Colour::TextNormal,

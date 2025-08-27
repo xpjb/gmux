@@ -144,7 +144,19 @@ pub fn grab_keys() -> Vec<KeyBinding> {
     keys.push(KeyBinding {
         mask: 0,
         keysym: keysym::XK_Print,
-        action: Action::Spawn("/home/pat/repo/scripts/screenshot".to_string()),
+        action: Action::Spawn(
+            "scrot '$HOME/Pictures/screenshots/$(date -Iseconds).png' -e 'xclip -selection clipboard -t image/png -i $f'"
+                .to_string(),
+        ),
+    });
+
+    keys.push(KeyBinding {
+        mask: MOD,
+        keysym: keysym::XK_s,
+        action: Action::Spawn(
+            "scrot -s '$HOME/Pictures/screenshots/$(date -Iseconds).png' -e 'xclip -selection clipboard -t image/png -i $f'"
+                .to_string(),
+        ),
     });
 
     const TAG_KEYS: &[(u32, u32)] = &[
