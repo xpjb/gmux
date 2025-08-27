@@ -140,12 +140,19 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         // CHECK: gmux.log should contain the error, AND the bar should turn red.
         action: Action::Spawn("ls /nonexistent/directory".to_string()),
     });
-
+    keys.push(KeyBinding {
+        mask: MOD,
+        keysym: keysym::XK_Print,
+        action: Action::Spawn(
+            "scrot -u \"$HOME/Pictures/screenshots/%Y-%m-%d-%T-screenshot.png\" -e 'xclip -selection clipboard -t image/png < $f'"
+                .to_string(),
+        ),
+    });
     keys.push(KeyBinding {
         mask: 0,
         keysym: keysym::XK_Print,
         action: Action::Spawn(
-            "scrot '$HOME/Pictures/screenshots/$(date -Iseconds).png' -e 'xclip -selection clipboard -t image/png -i $f'"
+            "scrot \"$HOME/Pictures/screenshots/%Y-%m-%d-%T-screenshot.png\" -e 'xclip -selection clipboard -t image/png < $f'"
                 .to_string(),
         ),
     });
@@ -154,7 +161,7 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         mask: MOD,
         keysym: keysym::XK_s,
         action: Action::Spawn(
-            "scrot -s '$HOME/Pictures/screenshots/$(date -Iseconds).png' -e 'xclip -selection clipboard -t image/png -i $f'"
+            "scrot -s \"$HOME/Pictures/screenshots/%Y-%m-%d-%T-screenshot.png\" -e 'xclip -selection clipboard -t image/png < $f'"
                 .to_string(),
         ),
     });
