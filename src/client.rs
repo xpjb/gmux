@@ -3,6 +3,18 @@ use crate::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClientHandle(x11::xlib::XID);
 
+impl From<Window> for ClientHandle {
+    fn from(win: Window) -> Self {
+        ClientHandle(win.0)
+    }
+}
+
+impl ClientHandle {
+    pub fn window(&self) -> Window {
+        Window(self.0)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     pub name: String,
@@ -38,6 +50,10 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn handle(&self) -> ClientHandle {
+        ClientHandle::from(self.win)
+    }
+
     pub fn width(&self) -> i32 {
         self.w + 2 * self.bw
     }

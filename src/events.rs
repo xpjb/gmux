@@ -44,25 +44,37 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
         }
         return None; // Click was on the bar, but not on a clickable element
 
-    } else if let Some((m_idx, c_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
+    } else if let Some(handle) = state.window_to_client_handle(ev.window) {
         if ev.button == 1 {
-            return Some(Action::FocusClient(m_idx, c_idx));
+            return Some(Action::FocusClient(handle));
         }
     }
     None
 }
 
 pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
-    let mon_idx = unsafe { state.window_to_monitor(ev.window) };
-    if mon_idx != state.selected_monitor {
-        state.unfocus(
-            state.selected_monitor,
-            state.mons[state.selected_monitor].sel.unwrap(),
-            true,
-        );
-        state.selected_monitor = mon_idx;
-        state.focus(mon_idx, None);
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        if let Some(client) = state.clients.get(&handle) {
+            let mon_idx = client.monitor_idx;
+            if mon_idx != state.selected_monitor {
+                if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
+                    state.unfocus(sel_handle, true);
+                }
+                state.selected_monitor = mon_idx;
+                state.focus(Some(handle));
+            }
+        }
+    } else {
+        let mon_idx = unsafe { state.window_to_monitor(ev.window) };
+        if mon_idx != state.selected_monitor {
+            if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
+                state.unfocus(sel_handle, true);
+            }
+            state.selected_monitor = mon_idx;
+            state.focus(None);
+        }
     }
+
     if let Some(action) = parse_button_press(state, ev) {
         action.execute(state);
     }
@@ -70,8 +82,8 @@ pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPr
 
 // DestroyNotify handler to unmanage windows
 pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
-    if let Some((mon_idx, client_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
-        state.unmanage(mon_idx, client_idx, true);
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        state.unmanage(handle, true);
     }
 }
 
@@ -81,11 +93,11 @@ pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionE
     }
     let m = state.rect_to_monitor(ev.x_root, ev.y_root, 1, 1);
     if m != state.selected_monitor {
-        if let Some(sel_idx) = state.mons[state.selected_monitor].sel {
-            state.unfocus(state.selected_monitor, sel_idx, true);
+        if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
+            state.unfocus(sel_handle, true);
         }
         state.selected_monitor = m;
-        state.focus(m, None);
+        state.focus(None);
     }
 }
 
@@ -99,13 +111,14 @@ pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossing
 
     // First, try to find the client by the event's window ID.
     // If that fails, it might be a root window event, so find the client by cursor position.
-    let client_info = unsafe { state.window_to_client_idx(ev.window) }
+    let handle = state.window_to_client_handle(ev.window)
         .or_else(|| state.client_at_pos(ev.x_root, ev.y_root));
 
-    if let Some((mon_idx, client_idx)) = client_info {
-        // Check if the found client is already selected on its monitor
-        if Some(client_idx) != state.mons[mon_idx].sel {
-            state.focus(mon_idx, Some(client_idx));
+    if let Some(h) = handle {
+        if let Some(c) = state.clients.get(&h) {
+            if Some(h) != state.mons[c.monitor_idx].sel {
+                state.focus(Some(h));
+            }
         }
     }
 }
@@ -115,7 +128,7 @@ pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapReques
         if wa.override_redirect != 0 {
             return;
         }
-        if unsafe { state.window_to_client_idx(ev.window) }.is_none() {
+        if state.window_to_client_handle(ev.window).is_none() {
             unsafe { state.manage(ev.window, &mut wa) };
         }
     }
@@ -123,22 +136,22 @@ pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapReques
 
 pub unsafe extern "C" fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
     // Check if the event is for a window we manage
-    if let Some((mon_idx, client_idx)) = unsafe { state.window_to_client_idx(ev.window) } {
-        let client = &mut state.mons[mon_idx].clients[client_idx];
-
-        // We only care about name changes.
-        // _NET_WM_NAME is the modern, UTF-8 compatible standard.
-        // XA_WM_NAME is the older, legacy standard.
-        if ev.atom == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMName))
-            || ev.atom == xlib::XA_WM_NAME
-        {
-            // Refetch the window title
-            if let Some(new_name) = state.xwrapper.get_window_title(client.win) {
-                if new_name != client.name {
-                    client.name = new_name;
-                    // Redraw the bar for the monitor this client is on
-                    let mon_idx = client.monitor_idx;
-                    state.draw_bar(mon_idx);
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        if let Some(client) = state.clients.get_mut(&handle) {
+            // We only care about name changes.
+            // _NET_WM_NAME is the modern, UTF-8 compatible standard.
+            // XA_WM_NAME is the older, legacy standard.
+            if ev.atom == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMName))
+                || ev.atom == xlib::XA_WM_NAME
+            {
+                // Refetch the window title
+                if let Some(new_name) = state.xwrapper.get_window_title(client.win) {
+                    if new_name != client.name {
+                        client.name = new_name;
+                        // Redraw the bar for the monitor this client is on
+                        let mon_idx = client.monitor_idx;
+                        state.draw_bar(mon_idx);
+                    }
                 }
             }
         }

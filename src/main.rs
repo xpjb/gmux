@@ -143,122 +143,72 @@ impl Gmux {
     }
 
 /// Finds a client by its absolute (x, y) coordinates on the screen.
-    fn client_at_pos(&self, x: i32, y: i32) -> Option<(usize, usize)> {
-        for (mon_idx, m) in self.mons.iter().enumerate() {
-            for (client_idx, c) in m.clients.iter().enumerate() {
-                // Check only visible clients
-                if c.is_visible_on(m) && (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
-                    return Some((mon_idx, client_idx));
-                }
+    fn client_at_pos(&self, x: i32, y: i32) -> Option<ClientHandle> {
+        for (handle, c) in &self.clients {
+            let m = &self.mons[c.monitor_idx];
+            if c.is_visible_on(m) && (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
+                return Some(*handle);
             }
         }
         None
     }
 
-    fn show_hide(&mut self, mon_idx: usize, stack: &[usize]) {
-        for &c_idx in stack.iter().rev() {
-            let c = &self.mons[mon_idx].clients[c_idx];
-            if c.is_visible_on(&self.mons[c.monitor_idx]) {
-                self.xwrapper.move_window(c.win, c.x, c.y);
-                if self.mons[c.monitor_idx].lt[self.mons[c.monitor_idx].selected_lt as usize].arrange.is_none()
-                    || c.is_floating && !c.is_fullscreen
-                {
-                    unsafe { self.resize(c.monitor_idx, c_idx, c.x, c.y, c.w, c.h, false) };
+    fn show_hide(&mut self, mon_idx: usize, stack: &[ClientHandle]) {
+        for &handle in stack.iter().rev() {
+            if let Some(c) = self.clients.get(&handle).cloned() {
+                if c.is_visible_on(&self.mons[mon_idx]) {
+                    self.xwrapper.move_window(c.win, c.x, c.y);
+                    let client_mon = &self.mons[c.monitor_idx];
+                    if client_mon.lt[client_mon.selected_lt as usize].arrange.is_none()
+                        || c.is_floating && !c.is_fullscreen
+                    {
+                        unsafe { self.resize(handle, c.x, c.y, c.w, c.h, false) };
+                    }
                 }
             }
         }
-    
-        for &c_idx in stack {
-            let c = &self.mons[mon_idx].clients[c_idx];
-            if !c.is_visible_on(&self.mons[c.monitor_idx]) {
-                self.xwrapper.move_window(c.win, -2 * c.width(), c.y);
+
+        for &handle in stack {
+            if let Some(c) = self.clients.get(&handle) {
+                if !c.is_visible_on(&self.mons[mon_idx]) {
+                    self.xwrapper.move_window(c.win, -2 * c.width(), c.y);
+                }
             }
         }
     }
-    
-    
-    fn unmanage(&mut self, mon_idx: usize, client_idx: usize, destroyed: bool) {
-        let client = if let Some(c) = self.detach(mon_idx, client_idx) {
-        c
-    } else {
-        return;
-    };
-        self.detachstack(mon_idx, client_idx);
-    
-    if !destroyed {
-            self.xwrapper.unmanage_window(client.win);
+
+
+    fn unmanage(&mut self, handle: ClientHandle, destroyed: bool) {
+        let mon_idx = if let Some(client) = self.clients.get(&handle) {
+            client.monitor_idx
+        } else {
+            return;
+        };
+
+        if !destroyed {
+            if let Some(client) = self.clients.get(&handle) {
+                self.xwrapper.unmanage_window(client.win);
+            }
         }
-        
-        let new_sel = self.mons[mon_idx].sel;
-        self.focus(mon_idx, new_sel);
+        self.clients.remove(&handle);
+
+        let mon = &mut self.mons[mon_idx];
+        mon.stack.retain(|&h| h != handle);
+
+        let new_sel = if mon.sel == Some(handle) {
+            mon.stack.first().cloned()
+        } else {
+            mon.sel
+        };
+        mon.sel = new_sel;
+
+        self.focus(new_sel);
         self.arrange(Some(mon_idx));
     }
-    
-    
-    fn pop(&mut self, mon_idx: usize, client_idx: usize) {
-        if let Some(client) = self.detach(mon_idx, client_idx) {
-            let new_c_idx = self.attach(client);
-            self.focus(mon_idx, Some(new_c_idx));
-            self.arrange(Some(mon_idx));
-        }
-    }
-    
-    
-    fn detach(&mut self, mon_idx: usize, client_idx: usize) -> Option<Client> {
-        let mon = &mut self.mons[mon_idx];
-        if client_idx >= mon.clients.len() {
-            return None;
-        }
-        let client = mon.clients.remove(client_idx);
-
-        if let Some(sel) = mon.sel {
-            if sel == client_idx {
-                if mon.clients.is_empty() {
-                    mon.sel = None;
-                } else {
-                    mon.sel = Some(client_idx.min(mon.clients.len() - 1));
-                }
-            } else if sel > client_idx {
-                mon.sel = Some(sel - 1);
-            }
-        }
-        mon.stack.retain(|&i| i != client_idx);
-        for s in mon.stack.iter_mut() {
-            if *s > client_idx {
-                *s -= 1;
-            }
-        }
-        Some(client)
-    }
 
 
-    fn attach(&mut self, c: Client) -> usize {
-    let mon_idx = c.monitor_idx;
-        let mon = &mut self.mons[mon_idx];
-
-    if let Some(sel) = mon.sel.as_mut() {
-        *sel += 1;
-    }
-    for s in mon.stack.iter_mut() {
-        *s += 1;
-    }
-
-    mon.clients.insert(0, c);
-    0
-}
-
-
-    fn attachstack(&mut self, mon_idx: usize, c_idx: usize) {
-        self.mons[mon_idx].stack.insert(0, c_idx);
-    }
-
-
-    fn detachstack(&mut self, mon_idx: usize, c_idx: usize) {
-        let mon = &mut self.mons[mon_idx];
-        mon.stack.retain(|&x| x != c_idx);
-    }
-
-    unsafe fn manage(&mut self, w: xlib::Window, wa: &mut xlib::XWindowAttributes) { unsafe {
+    unsafe fn manage(&mut self, w: xlib::Window, wa: &mut xlib::XWindowAttributes) {
+        let handle = ClientHandle::from(Window(w));
         let mut client = Client {
             win: Window(w),
             name: String::new(),
@@ -299,8 +249,8 @@ impl Gmux {
 
         // 2. Handle transient windows
             let is_transient = if let Some(parent_win) = self.xwrapper.get_transient_for_hint(client.win) {
-                if let Some((mon_idx, client_idx)) = self.window_to_client_idx(parent_win.0) {
-                    let parent_client = &self.mons[mon_idx].clients[client_idx];
+                if let Some(parent_handle) = self.window_to_client_handle(parent_win.0) {
+                    let parent_client = self.clients.get(&parent_handle).unwrap();
                 client.monitor_idx = parent_client.monitor_idx;
                 client.tags = parent_client.tags;
                 client.is_floating = true;
@@ -351,31 +301,30 @@ impl Gmux {
             }
         }
 
-        let win_copy = client.win;
-            let c_idx = self.attach(client);
-            self.attachstack(self.selected_monitor, c_idx);
-            
-            self.arrange(Some(self.selected_monitor));
-            let sel_client_idx = self.mons[self.selected_monitor].clients.iter().position(|c| c.win.0 == win_copy.0).unwrap();
-            let sel_client = &self.mons[self.selected_monitor].clients[sel_client_idx];
-            
+        let mon_idx = client.monitor_idx;
+        self.clients.insert(handle, client);
+        self.mons[mon_idx].stack.insert(0, handle);
+
+        self.arrange(Some(self.selected_monitor));
+        if let Some(sel_client) = self.clients.get(&handle) {
             self.xwrapper.select_input(
-            sel_client.win,
-            xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask
-        );
+                sel_client.win,
+                xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask,
+            );
 
             self.xwrapper.map_window(sel_client.win);
-            self.focus(self.selected_monitor, Some(sel_client_idx));
-    }}
-
-
-    unsafe fn window_to_client_idx(&self, w: xlib::Window) -> Option<(usize, usize)> {
-        for (mon_idx, m) in self.mons.iter().enumerate() {
-            if let Some(client_idx) = m.clients.iter().position(|c| c.win.0 == w) {
-                return Some((mon_idx, client_idx));
-            }
         }
-        None
+        self.focus(Some(handle));
+    }
+
+
+    fn window_to_client_handle(&self, w: xlib::Window) -> Option<ClientHandle> {
+        let handle = ClientHandle::from(Window(w));
+        if self.clients.contains_key(&handle) {
+            Some(handle)
+        } else {
+            None
+        }
     }
 
     fn scan(&mut self) {

@@ -61,10 +61,12 @@ impl Gmux {
         // Calculate occupied and urgent tags
         let mut occ: u32 = 0;
         let mut urg: u32 = 0;
-        for c in &mon.clients {
-            occ |= c.tags;
-            if c.is_urgent {
-                urg |= c.tags;
+        for c in self.clients.values() {
+            if c.monitor_idx == mon_idx {
+                occ |= c.tags;
+                if c.is_urgent {
+                    urg |= c.tags;
+                }
             }
         }
 
@@ -96,8 +98,8 @@ impl Gmux {
         if (occ & (1 << i)) != 0 {
             // 2. Determine if the box should be filled. It is filled if the
             //    currently selected client is on this tag.
-            let is_filled = mon.sel.map_or(false, |sel_idx| {
-                (mon.clients[sel_idx].tags & (1 << i)) != 0
+            let is_filled = mon.sel.map_or(false, |sel_handle| {
+                self.clients.get(&sel_handle).map_or(false, |c| (c.tags & (1 << i)) != 0)
             });
 
             // 3. Draw the box using the current scheme's foreground color.
@@ -121,7 +123,7 @@ impl Gmux {
 
 
     // Center Text
-    let s = mon.sel.and_then(|i| mon.clients.get(i).map(|c| c.name.as_str()));
+    let s = mon.sel.and_then(|h| self.clients.get(&h).map(|c| c.name.as_str()));
     let (col, text_to_draw) = if let Some(name) = s {
         (Colour::BarForeground, name)
     } else {

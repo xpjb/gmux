@@ -52,8 +52,10 @@ impl Gmux {
                 return i;
             }
         }
-        if let Some((mon_idx, _)) = unsafe { self.window_to_client_idx(w) } {
-            return mon_idx;
+        if let Some(handle) = self.window_to_client_handle(w) {
+            if let Some(client) = self.clients.get(&handle) {
+                return client.monitor_idx;
+            }
         }
         self.selected_monitor
     }
@@ -74,46 +76,29 @@ impl Gmux {
 
     pub fn arrange(&mut self, mon_idx: Option<usize>) {
         if let Some(idx) = mon_idx {
-            let stack = self.mons[idx].stack.clone();
-            self.show_hide(idx, &stack);
+            self.show_hide(idx, &self.mons[idx].stack.clone());
             self.arrange_monitor(idx);
-    
-            // ======================== NEW LOGIC START ========================
-            // After arranging, determine the correct client to focus.
-            let new_sel_idx = {
+
+            let new_sel = {
                 let mon = &self.mons[idx];
-                // Check if the current selection is still visible.
-                let current_sel_is_visible = mon.sel
-                    .and_then(|s_idx| mon.clients.get(s_idx)) // Safely get the client
-                    .map(|s_client| s_client.is_visible_on(mon))
-                    .unwrap_or(false);
-    
-                if current_sel_is_visible {
-                    // If it's still visible, keep it selected.
+                let visible_clients = mon.stack.iter()
+                    .filter_map(|h| self.clients.get(h))
+                    .find(|c| c.is_visible_on(mon));
+
+                if mon.sel.is_some() && visible_clients.is_some() && visible_clients.unwrap().handle() == mon.sel.unwrap() {
                     mon.sel
                 } else {
-                    // Otherwise, find the first visible client and select it.
-                    // If no client is visible, this will be `None`.
-                    mon.clients.iter().enumerate()
-                        .find(|(_, c)| c.is_visible_on(mon))
-                        .map(|(i, _)| i)
+                    mon.stack.iter()
+                        .find(|h| self.clients.get(h).map_or(false, |c| c.is_visible_on(mon)))
+                        .cloned()
                 }
             };
-    
-            // Update the focus with the new selection (or None).
-            // This function will also call `draw_bars` to update the visuals.
-            self.focus(idx, new_sel_idx);
-            // ========================= NEW LOGIC END =========================
-    
+            self.focus(new_sel);
             self.restack(idx);
-    
+
         } else {
-            // This part arranges all monitors. You might need to apply
-            // similar focus logic here if you want multi-monitor
-            // arrange operations to update focus correctly.
             for i in 0..self.mons.len() {
-                let stack = self.mons[i].stack.clone();
-                self.show_hide(i, &stack);
+                self.show_hide(i, &self.mons[i].stack.clone());
                 self.arrange_monitor(i);
             }
             for i in 0..self.mons.len() {
@@ -135,113 +120,117 @@ impl Gmux {
     
     pub fn restack(&mut self, mon_idx: usize) {
         self.draw_bar(mon_idx);
-        if let Some(m) = self.mons.get(mon_idx) {
-            if m.sel.is_none() {
-                return;
-            }
-            let sel_client = &m.clients[m.sel.unwrap()];
-            if sel_client.is_floating || m.lt[m.selected_lt as usize].arrange.is_none() {
+        let mon = &self.mons[mon_idx];
+        if mon.sel.is_none() {
+            return;
+        }
+        if let Some(sel_client) = mon.get_sel_client(&self.clients) {
+            if sel_client.is_floating || mon.lt[mon.selected_lt as usize].arrange.is_none() {
                 self.xwrapper.raise_window(sel_client.win);
             }
+        }
 
-            let mut windows_to_stack: Vec<Window> = Vec::new();
-            windows_to_stack.push(m.bar_window);
+        let mut windows_to_stack: Vec<Window> = Vec::new();
+        windows_to_stack.push(mon.bar_window);
 
-            for &c_idx in &m.stack {
-                let c = &m.clients[c_idx];
-                if !c.is_floating && c.is_visible_on(m) {
+        for &handle in &mon.stack {
+            if let Some(c) = self.clients.get(&handle) {
+                if !c.is_floating && c.is_visible_on(mon) {
                     windows_to_stack.push(c.win);
                 }
             }
-            
-            self.xwrapper.stack_windows(&windows_to_stack);
         }
+
+        self.xwrapper.stack_windows(&windows_to_stack);
     }
 
-    pub fn focus(&mut self, mon_idx: usize, c_idx: Option<usize>) {
-        let selmon_idx = self.selected_monitor;
-    
-        if let Some(old_sel_idx) = self.mons[selmon_idx].sel {
-            if c_idx.is_none() || mon_idx != selmon_idx || old_sel_idx != c_idx.unwrap() {
-                self.unfocus(selmon_idx, old_sel_idx, false);
+    pub fn focus(&mut self, handle: Option<ClientHandle>) {
+        if let Some(sel_handle) = self.mons[self.selected_monitor].sel {
+            if handle.is_none() || sel_handle != handle.unwrap() {
+                self.unfocus(sel_handle, false);
             }
         }
-    
-        if let Some(idx) = c_idx {
-            let new_mon_idx = self.mons[mon_idx].clients[idx].monitor_idx;
-            if new_mon_idx != selmon_idx {
-                self.selected_monitor = new_mon_idx;
+
+        if let Some(h) = handle {
+            let client_win = if let Some(c) = self.clients.get(&h) {
+                if c.monitor_idx != self.selected_monitor {
+                    self.selected_monitor = c.monitor_idx;
+                }
+                if c.is_urgent {
+                    // seturgent(c, 0);
+                }
+                Some(c.win)
+            } else {
+                None
+            };
+
+            if let Some(win) = client_win {
+                // detachstack(c);
+                // attachstack(c);
+                self.grab_buttons(h, true);
+                let keys = crate::config::grab_keys();
+                let key_specs: Vec<KeySpecification> = keys
+                    .iter()
+                    .map(|k| KeySpecification {
+                        mask: k.mask,
+                        keysym: k.keysym,
+                    })
+                    .collect();
+                self
+                    .xwrapper
+                    .grab_keys(win, self.numlock_mask, &key_specs);
+                self.xwrapper.set_window_border_color(win, Colour::WindowActive);
+                self
+                    .xwrapper
+                    .set_input_focus(win, xlib::RevertToPointerRoot);
             }
-            let c_win = self.mons[new_mon_idx].clients[idx].win;
-            let c_isurgent = self.mons[new_mon_idx].clients[idx].is_urgent;
-            if c_isurgent {
-                // seturgent(c, 0);
-            }
-            // detachstack(c);
-            // attachstack(c);
-            self.grab_buttons(new_mon_idx, idx, true);
-            let keys = crate::config::grab_keys();
-            let key_specs: Vec<KeySpecification> = keys
-                .iter()
-                .map(|k| KeySpecification {
-                    mask: k.mask,
-                    keysym: k.keysym,
-                })
-                .collect();
-            self
-                .xwrapper
-                .grab_keys(c_win, self.numlock_mask, &key_specs);
-            self.xwrapper.set_window_border_color(c_win, Colour::WindowActive);
-            self
-                .xwrapper
-                .set_input_focus(c_win, xlib::RevertToPointerRoot);
         } else {
             self
                 .xwrapper
                 .set_input_focus(self.root, xlib::RevertToPointerRoot);
             // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
         }
-        self.mons[self.selected_monitor].sel = c_idx;
+        self.mons[self.selected_monitor].sel = handle;
         self.draw_bars();
     }
-    
-    pub fn unfocus(&mut self, mon_idx: usize, c_idx: usize, setfocus: bool) {
-        if c_idx >= self.mons[mon_idx].clients.len() {
-            return;
-        }
-        let c_win = self.mons[mon_idx].clients[c_idx].win;
-        self.grab_buttons(mon_idx, c_idx, false);
-        self.xwrapper.ungrab_keys(c_win);
-        self.xwrapper.set_window_border_color(c_win, Colour::WindowInactive);
-        if setfocus {
-            self
-                .xwrapper
-                .set_input_focus(self.root, xlib::RevertToPointerRoot);
-            // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+
+    pub fn unfocus(&mut self, handle: ClientHandle, setfocus: bool) {
+        let client_win = self.clients.get(&handle).map(|c| c.win);
+        if let Some(win) = client_win {
+            self.grab_buttons(handle, false);
+            self.xwrapper.ungrab_keys(win);
+            self.xwrapper.set_window_border_color(win, Colour::WindowInactive);
+            if setfocus {
+                self
+                    .xwrapper
+                    .set_input_focus(self.root, xlib::RevertToPointerRoot);
+                // XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
+            }
         }
     }
 
-    pub unsafe fn resize(&mut self, mon_idx: usize, client_idx: usize, x: i32, y: i32, w: i32, h: i32, _interact: bool) {
-        let client = &mut self.mons[mon_idx].clients[client_idx];
-        client.oldx = client.x;
-        client.x = x;
-        client.oldy = client.y;
-        client.y = y;
-        client.oldw = client.w;
-        client.w = w;
-        client.oldh = client.h;
-        client.h = h;
-        self.xwrapper.configure_window(
-            client.win,
-            client.x,
-            client.y,
-            client.w,
-            client.h,
-            crate::config::BORDER_PX,
-        );
+    pub unsafe fn resize(&mut self, handle: ClientHandle, x: i32, y: i32, w: i32, h: i32, _interact: bool) {
+        if let Some(client) = self.clients.get_mut(&handle) {
+            client.oldx = client.x;
+            client.x = x;
+            client.oldy = client.y;
+            client.y = y;
+            client.oldw = client.w;
+            client.w = w;
+            client.oldh = client.h;
+            client.h = h;
+            self.xwrapper.configure_window(
+                client.win,
+                client.x,
+                client.y,
+                client.w,
+                client.h,
+                crate::config::BORDER_PX,
+            );
+        }
     }
 
-    fn grab_buttons(&mut self, _mon_idx: usize, _c_idx: usize, _focused: bool) {
+    fn grab_buttons(&mut self, _handle: ClientHandle, _focused: bool) {
         // For now, this is a stub
         // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
     }
@@ -514,18 +503,16 @@ impl Gmux {
                 .xwrapper
                 .grab_keys(self.root, self.numlock_mask, &key_specs);
 
-            self.focus(0, None);
+            self.focus(None);
         }
     }
 }
 
 impl Drop for Gmux {
     fn drop(&mut self) {
-        for i in 0..self.mons.len() {
-            while !self.mons[i].stack.is_empty() {
-                let c_idx = self.mons[i].stack.pop().unwrap();
-                self.unmanage(i, c_idx, false);
-            }
+        let client_handles: Vec<ClientHandle> = self.clients.keys().cloned().collect();
+        for handle in client_handles {
+            self.unmanage(handle, false);
         }
         self.xwrapper.ungrab_key(self.root);
     }

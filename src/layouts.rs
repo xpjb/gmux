@@ -1,4 +1,5 @@
 use crate::state::{Gmux};
+use crate::ClientHandle;
 
 #[derive(Debug)]
 pub struct Layout {
@@ -23,14 +24,12 @@ pub static LAYOUTS: [Layout; 3] = [
 
 fn tile(state: &mut Gmux, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
-    let tiled_client_indices: Vec<usize> = mon
-        .clients
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.is_floating && c.is_visible_on(mon))
-        .map(|(i, _)| i)
+    let tiled_clients: Vec<ClientHandle> = mon.stack.iter()
+        .filter(|h| state.clients.get(h).map_or(false, |c| !c.is_floating && c.is_visible_on(mon)))
+        .cloned()
         .collect();
-    let n = tiled_client_indices.len();
+
+    let n = tiled_clients.len();
     if n == 0 {
         return;
     }
@@ -55,36 +54,36 @@ fn tile(state: &mut Gmux, mon_idx: usize) {
     let mut my = 0;
     let mut ty = 0;
 
-    for (i, &client_idx) in tiled_client_indices.iter().enumerate() {
-        let client_bw = state.mons[mon_idx].clients[client_idx].bw;
+    for (i, &handle) in tiled_clients.iter().enumerate() {
+        if let Some(client) = state.clients.get(&handle) {
+            let client_bw = client.bw;
 
-        if i < nmaster as usize {
-            let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
-            unsafe { state.resize(
-                mon_idx,
-                client_idx,
-                wx,
-                wy + my,
-                mw - (2 * client_bw),
-                h - (2 * client_bw),
-                false,
-            ) };
-            if my + h < wh {
-                my += h;
-            }
-        } else {
-            let h = (wh - ty) / (n - i) as i32;
-            unsafe { state.resize(
-                mon_idx,
-                client_idx,
-                wx + mw,
-                wy + ty,
-                ww - mw - (2 * client_bw),
-                h - (2 * client_bw),
-                false,
-            ) };
-            if ty + h < wh {
-                ty += h;
+            if i < nmaster as usize {
+                let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
+                unsafe { state.resize(
+                    handle,
+                    wx,
+                    wy + my,
+                    mw - (2 * client_bw),
+                    h - (2 * client_bw),
+                    false,
+                ) };
+                if my + h < wh {
+                    my += h;
+                }
+            } else {
+                let h = (wh - ty) / (n - i) as i32;
+                unsafe { state.resize(
+                    handle,
+                    wx + mw,
+                    wy + ty,
+                    ww - mw - (2 * client_bw),
+                    h - (2 * client_bw),
+                    false,
+                ) };
+                if ty + h < wh {
+                    ty += h;
+                }
             }
         }
     }
@@ -92,12 +91,9 @@ fn tile(state: &mut Gmux, mon_idx: usize) {
 
 fn monocle(state: &mut Gmux, mon_idx: usize) {
     let mon = &state.mons[mon_idx];
-    let tiled_client_indices: Vec<usize> = mon
-        .clients
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.is_floating && c.is_visible_on(mon))
-        .map(|(i, _)| i)
+    let tiled_clients: Vec<ClientHandle> = mon.stack.iter()
+        .filter(|h| state.clients.get(h).map_or(false, |c| !c.is_floating && c.is_visible_on(mon)))
+        .cloned()
         .collect();
 
     let wx = mon.wx;
@@ -105,16 +101,17 @@ fn monocle(state: &mut Gmux, mon_idx: usize) {
     let ww = mon.ww;
     let wh = mon.wh;
 
-    for &client_idx in &tiled_client_indices {
-        let client_bw = state.mons[mon_idx].clients[client_idx].bw;
-        unsafe { state.resize(
-            mon_idx,
-            client_idx,
-            wx,
-            wy,
-            ww - 2 * client_bw,
-            wh - 2 * client_bw,
-            false,
-        ) };
+    for &handle in &tiled_clients {
+        if let Some(client) = state.clients.get(&handle) {
+            let client_bw = client.bw;
+            unsafe { state.resize(
+                handle,
+                wx,
+                wy,
+                ww - 2 * client_bw,
+                wh - 2 * client_bw,
+                false,
+            ) };
+        }
     }
 }

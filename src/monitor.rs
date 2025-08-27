@@ -1,4 +1,5 @@
 use crate::*;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Clickable {
@@ -27,10 +28,9 @@ pub struct Monitor {
     pub tagset: [u32; 2],
     pub show_bar: bool,
     pub top_bar: bool,
-    pub clients: Vec<Client>,
     pub clickables: Vec<Clickable>,
-    pub sel: Option<usize>,
-    pub stack: Vec<usize>,
+    pub sel: Option<ClientHandle>,
+    pub stack: Vec<ClientHandle>,
     pub bar_window: Window,
     pub lt: [&'static Layout; 2],
 }
@@ -43,8 +43,8 @@ impl Monitor {
     // Just make sel private to see the spaghetti
     // A lot of it ultimately turns into an X call with the client: can we inject x wrapper??
     // Most of these should be on monitor or something
-    pub fn get_sel_client(&self) -> Option<&Client> {
-        self.sel.and_then(|s_idx| self.clients.get(s_idx))
+    pub fn get_sel_client<'a>(&self, clients: &'a HashMap<ClientHandle, Client>) -> Option<&'a Client> {
+        self.sel.and_then(|h| clients.get(&h))
     }
 
     pub fn intersect_area(&self, x: i32, y: i32, w: i32, h: i32) -> i32 {
@@ -79,7 +79,6 @@ impl Default for Monitor {
             tagset: [0, 0],
             show_bar: false,
             top_bar: false,
-            clients: Vec::new(),
             clickables: Vec::new(),
             sel: None,
             stack: Vec::new(),

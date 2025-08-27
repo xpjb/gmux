@@ -21,7 +21,7 @@ pub enum Action {
     ToggleView(u32),
     ToggleTag(u32),
     CycleTag(i32),
-    FocusClient(usize, usize),
+    FocusClient(ClientHandle),
     EnterLauncherMode,
 }
 
@@ -43,38 +43,28 @@ impl Action {
             Action::FocusStack(i) => {
                 let selmon_idx = state.selected_monitor;
                 let selmon = &state.mons[selmon_idx];
-                if selmon.sel.is_none() {
-                    return;
-                }
-                let sel_idx = selmon.sel.unwrap();
-                let c_idx: usize;
-
-                let visible_clients_indices: Vec<usize> = selmon
-                    .clients
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.is_visible_on(selmon))
-                    .map(|(i, _)| i)
-                    .collect();
-                if visible_clients_indices.is_empty() {
-                    return;
-                }
-
-                if let Some(pos) = visible_clients_indices.iter().position(|&i| i == sel_idx) {
-                    c_idx = if *i > 0 {
-                        visible_clients_indices[(pos + 1) % visible_clients_indices.len()]
-                    } else {
-                        visible_clients_indices
-                            [(pos + visible_clients_indices.len() - 1) % visible_clients_indices.len()]
-                    };
+                let sel_handle = if let Some(sel) = selmon.sel {
+                    sel
                 } else {
-                    c_idx = visible_clients_indices[0];
+                    return;
+                };
+
+                let visible_clients: Vec<ClientHandle> = selmon.stack.iter()
+                    .filter(|h| state.clients.get(h).map_or(false, |c| c.is_visible_on(selmon)))
+                    .cloned()
+                    .collect();
+
+                if visible_clients.is_empty() {
+                    return;
                 }
 
-                if c_idx < selmon.clients.len() {
-                    state.focus(selmon_idx, Some(c_idx));
-                    state.restack(selmon_idx);
+                if let Some(pos) = visible_clients.iter().position(|h| *h == sel_handle) {
+                    let new_pos = (pos as i32 + i + visible_clients.len() as i32) as usize % visible_clients.len();
+                    state.focus(Some(visible_clients[new_pos]));
+                } else {
+                    state.focus(visible_clients.first().cloned());
                 }
+                state.restack(selmon_idx);
             }
             Action::IncNMaster(i) => {
                 let selmon_idx = state.selected_monitor;
@@ -101,30 +91,21 @@ impl Action {
             }
             Action::Zoom => {
                 let selmon_idx = state.selected_monitor;
-                if let Some(sel_idx) = state.mons[selmon_idx].sel {
-                    let c = &state.mons[selmon_idx].clients[sel_idx];
-                    if state.mons[selmon_idx].lt[state.mons[selmon_idx].selected_lt as usize]
-                        .arrange
-                        .is_none()
-                        || c.is_floating
-                    {
-                        return;
-                    }
+                if let Some(sel_handle) = state.mons[selmon_idx].sel {
+                    if let Some(c) = state.clients.get(&sel_handle) {
+                        if state.mons[selmon_idx].lt[state.mons[selmon_idx].selected_lt as usize]
+                            .arrange
+                            .is_none()
+                            || c.is_floating
+                        {
+                            return;
+                        }
 
-                    let tiled_clients_indices: Vec<usize> = state.mons[selmon_idx]
-                        .clients
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, cl)| !cl.is_floating && cl.is_visible_on(&state.mons[selmon_idx]))
-                        .map(|(i, _)| i)
-                        .collect();
-                    if let Some(pos) = tiled_clients_indices.iter().position(|&i| i == sel_idx) {
-                        if pos == 0 {
-                            if tiled_clients_indices.len() > 1 {
-                                state.pop(selmon_idx, tiled_clients_indices[1]);
-                            }
-                        } else {
-                            state.pop(selmon_idx, sel_idx);
+                        let mon = &mut state.mons[selmon_idx];
+                        if let Some(pos) = mon.stack.iter().position(|h| *h == sel_handle) {
+                            mon.stack.remove(pos);
+                            mon.stack.insert(0, sel_handle);
+                            state.arrange(Some(selmon_idx));
                         }
                     }
                 }
@@ -134,7 +115,7 @@ impl Action {
                     Some(idx) => {
                         if *idx != state.selected_monitor {
                             let last_sel = state.mons[*idx].sel;
-                            state.focus(*idx, last_sel);
+                            state.focus(last_sel);
                         }
                         *idx
                     }
@@ -155,19 +136,20 @@ impl Action {
             }
             Action::KillClient => {
                 let selmon_idx = state.selected_monitor;
-                if let Some(sel_idx) = state.mons[selmon_idx].sel {
-                    let client_to_kill = state.mons[selmon_idx].clients[sel_idx].clone();
-                    if !state.xwrapper.send_event(
-                        client_to_kill.win,
-                        state.xwrapper.atoms.get(crate::xwrapper::Atom::Wm(crate::xwrapper::WM::Delete)),
-                    ) {
-                        state.xwrapper.grab_server();
-                        state.xwrapper.set_ignore_error_handler();
-                        state.xwrapper.set_close_down_mode(xlib::DestroyAll);
-                        state.xwrapper.kill_client(client_to_kill.win);
-                        state.xwrapper.sync(false);
-                        state.xwrapper.set_default_error_handler();
-                        state.xwrapper.ungrab_server();
+                if let Some(sel_handle) = state.mons[selmon_idx].sel {
+                    if let Some(client_to_kill) = state.clients.get(&sel_handle) {
+                        if !state.xwrapper.send_event(
+                            client_to_kill.win,
+                            state.xwrapper.atoms.get(crate::xwrapper::Atom::Wm(crate::xwrapper::WM::Delete)),
+                        ) {
+                            state.xwrapper.grab_server();
+                            state.xwrapper.set_ignore_error_handler();
+                            state.xwrapper.set_close_down_mode(xlib::DestroyAll);
+                            state.xwrapper.kill_client(client_to_kill.win);
+                            state.xwrapper.sync(false);
+                            state.xwrapper.set_default_error_handler();
+                            state.xwrapper.ungrab_server();
+                        }
                     }
                 }
             }
@@ -184,17 +166,20 @@ impl Action {
             }
             Action::ToggleFloating => {
                 let selmon_idx = state.selected_monitor;
-                if let Some(sel_idx) = state.mons[selmon_idx].sel {
-                    let client = &mut state.mons[selmon_idx].clients[sel_idx];
-                    client.is_floating = !client.is_floating;
-                    // arrange(selmon);
+                if let Some(sel_handle) = state.mons[selmon_idx].sel {
+                    if let Some(client) = state.clients.get_mut(&sel_handle) {
+                        client.is_floating = !client.is_floating;
+                    }
+                    state.arrange(Some(selmon_idx));
                 }
             }
             Action::Tag(ui) => {
                 let selmon_idx = state.selected_monitor;
-                if let Some(sel_idx) = state.mons[selmon_idx].sel {
+                if let Some(sel_handle) = state.mons[selmon_idx].sel {
                     if (*ui & TAG_MASK) != 0 {
-                        state.mons[selmon_idx].clients[sel_idx].tags = *ui & TAG_MASK;
+                        if let Some(client) = state.clients.get_mut(&sel_handle) {
+                            client.tags = *ui & TAG_MASK;
+                        }
                         state.arrange(Some(selmon_idx));
                     }
                 }
@@ -211,7 +196,7 @@ impl Action {
                         (state.selected_monitor + state.mons.len() - 1) % state.mons.len();
                 }
                 let last_sel = state.mons[next_mon_idx].sel;
-                state.focus(next_mon_idx, last_sel);
+                state.focus(last_sel);
             }
             Action::TagMon(i) => {
                 let selmon_idx = state.selected_monitor;
@@ -243,12 +228,13 @@ impl Action {
             }
             Action::ToggleTag(ui) => {
                 let selmon_idx = state.selected_monitor;
-                if let Some(sel_idx) = state.mons[selmon_idx].sel {
-                    let newtags =
-                        state.mons[selmon_idx].clients[sel_idx].tags ^ (*ui & TAG_MASK);
-                    if newtags != 0 {
-                        state.mons[selmon_idx].clients[sel_idx].tags = newtags;
-                        state.arrange(Some(selmon_idx));
+                if let Some(sel_handle) = state.mons[selmon_idx].sel {
+                    if let Some(client) = state.clients.get_mut(&sel_handle) {
+                        let newtags = client.tags ^ (*ui & TAG_MASK);
+                        if newtags != 0 {
+                            client.tags = newtags;
+                            state.arrange(Some(selmon_idx));
+                        }
                     }
                 }
             }
@@ -270,8 +256,8 @@ impl Action {
                 mon.tagset[mon.selected_tags as usize] = 1 << new_tag_idx;
                 state.arrange(Some(selmon_idx));
             }
-            Action::FocusClient(mon_idx, client_idx) => {
-                state.focus(*mon_idx, Some(*client_idx));
+            Action::FocusClient(handle) => {
+                state.focus(Some(*handle));
                 state.restack(state.selected_monitor);
                 state.xwrapper.allow_events(xlib::ReplayPointer);
             }
