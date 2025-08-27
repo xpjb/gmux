@@ -1,11 +1,6 @@
 use std::time::Instant;
 use chrono::Local;
-use crate::state::Gmux;
-use crate::ivec2::ivec2;
-use crate::colour::Colour;
-use crate::config::BAR_H_PADDING;
-use crate::actions::Action;
-use crate::state;
+use crate::*;
 
 pub const LAUNCHER_PROPORTION: f32 = 0.381953;
 
@@ -112,7 +107,7 @@ impl Gmux {
 
             self.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
             let action = Action::ViewTag(1 << i, Some(mon_idx));
-            mon.clickables.push(state::Clickable{pos, size: tag_wh, action});
+            mon.clickables.push(Clickable{pos, size: tag_wh, action});
             pos.x += w as i32;
         }
 

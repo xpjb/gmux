@@ -1,14 +1,7 @@
 use std::time::{Duration, Instant};
 use x11::xlib;
-use colour::Colour;
-use xwrapper::Window;
-use state::{Client, Gmux};
-use config::BORDER_PX;
-use actions::Action;
-use crate::bar::BarState;
 use simplelog::*;
 use std::fs::File;
-use crate::error::GmuxError;
 use std::process::Command;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -23,6 +16,21 @@ mod actions;
 mod events;
 mod bar;
 mod error;
+mod client;
+mod monitor;
+
+pub use ivec2::*;
+pub use xwrapper::*;
+pub use colour::*;
+pub use state::*;
+pub use config::*;
+pub use layouts::*;
+pub use actions::*;
+pub use events::*;
+pub use bar::*;
+pub use error::*;
+pub use client::*;
+pub use monitor::*;
 
 const TAG_MASK: u32 = (1 << config::TAGS.len()) - 1;
 
