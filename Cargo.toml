@@ -13,6 +13,7 @@ simplelog = "0.12"
 toml = "0.5.9"
 x11 = "2.21.0"
 fuzzy-matcher = "0.3.7"
+chrono = "0.4"
 
 [profile.dev]
 opt-level = 1
