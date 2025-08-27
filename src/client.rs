@@ -1,5 +1,8 @@
 use crate::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClientHandle(x11::xlib::XID);
+
 #[derive(Debug, Clone)]
 pub struct Client {
     pub name: String,

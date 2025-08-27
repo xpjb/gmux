@@ -36,6 +36,17 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    // Okay this is gonna be a hard one LOL, probably need to change all logic
+    // My plan was to encapsulate it
+    // But theres all this cooked logic that fingers this and does all sorts of shit
+    // Im not sure what the API boundary is: maybe a monitor does its own arranging and shit in here?
+    // Just make sel private to see the spaghetti
+    // A lot of it ultimately turns into an X call with the client: can we inject x wrapper??
+    // Most of these should be on monitor or something
+    pub fn get_sel_client(&self) -> Option<&Client> {
+        self.sel.and_then(|s_idx| self.clients.get(s_idx))
+    }
+
     pub fn intersect_area(&self, x: i32, y: i32, w: i32, h: i32) -> i32 {
         std::cmp::max(
             0,

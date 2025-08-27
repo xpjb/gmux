@@ -9,6 +9,7 @@ use std::env;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use x11::{keysym, xlib};
+use std::collections::HashMap;
 
 use crate::*;
 
@@ -35,6 +36,7 @@ pub struct Gmux {
     pub bar_state: BarState,
     pub command_sender: Sender<GmuxError>,
     pub command_receiver: Receiver<GmuxError>,
+    pub clients: HashMap<ClientHandle, Client>,
 }
 
 impl Gmux {
@@ -394,6 +396,7 @@ impl Gmux {
             xwrapper,
             command_sender,
             command_receiver,
+            clients: HashMap::new(),
         };
 
         state.setup();
