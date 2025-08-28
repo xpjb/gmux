@@ -252,6 +252,7 @@ impl Gmux {
             match keysym {
                 keysym::XK_Escape => {
                     new_state = Some(BarState::Normal);
+                    self.xwrapper.ungrab_keyboard();
                 }
                 keysym::XK_Return => {
                     if !candidate_indices.is_empty() {
@@ -259,6 +260,7 @@ impl Gmux {
                         command_to_run = Some(self.all_commands[command_idx].clone());
                     }
                     new_state = Some(BarState::Normal);
+                    self.xwrapper.ungrab_keyboard();
                 }
                 keysym::XK_Left => {
                     if *selected_idx > 0 {
@@ -322,6 +324,7 @@ impl Gmux {
             candidate_indices: initial_candidates,
             selected_idx: 0,
         };
+        self.xwrapper.grab_keyboard(self.root);
         self.draw_bars();
     }
 

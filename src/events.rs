@@ -116,7 +116,7 @@ pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossing
 
     if let Some(h) = handle {
         if let Some(c) = state.clients.get(&h) {
-            if Some(h) != state.mons[c.monitor_idx].sel {
+            if state.mons[c.monitor_idx].sel.is_some() && Some(h) != state.mons[c.monitor_idx].sel {
                 state.focus(Some(h));
             }
         }

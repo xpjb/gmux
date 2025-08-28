@@ -7,6 +7,7 @@
 * Test performance of launcher caching too
 * parse .desktop files for launcher as well, maybe even filtering the garbo, only .desktop files is feasible ???
 * Screenshot commands are fucked up
+* Getting an error in launcher state would probably cook you
 
 # XID Replacement
 sel_idx in mon

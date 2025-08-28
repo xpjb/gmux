@@ -962,6 +962,31 @@ impl XWrapper {
         let pixel = self.colors[color as usize].pixel;
         self.set_window_border(win, pixel);
     }
+
+    pub fn grab_keyboard(&self, win: Window) {
+        unsafe {
+            for _ in 0..1000 {
+                let result = xlib::XGrabKeyboard(
+                    self.dpy,
+                    win.0,
+                    1, // owner_events: true
+                    xlib::GrabModeAsync,
+                    xlib::GrabModeAsync,
+                    xlib::CurrentTime,
+                );
+                if result == xlib::GrabSuccess {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    pub fn ungrab_keyboard(&self) {
+        unsafe {
+            xlib::XUngrabKeyboard(self.dpy, xlib::CurrentTime);
+        }
+    }
 }
 
 
