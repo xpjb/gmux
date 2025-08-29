@@ -281,7 +281,7 @@ impl Gmux {
             self.screen_height = self.xwrapper.display_height(self.screen);
             self.root = self.xwrapper.root_window(self.screen);
             
-            let fonts = &["monospace:size=16"]; // TODO: configurable
+            let fonts = &["monospace:size=20"]; // TODO: configurable
             if !self.xwrapper.fontset_create(fonts) {
                 panic!("no fonts could be loaded.");
             }
