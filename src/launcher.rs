@@ -3,9 +3,13 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use x11::{keysym, xlib};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+// Add the new dependencies
+use freedesktop_desktop_entry::DesktopEntry;
+use dirs;
 
 pub const LAUNCHER_PROPORTION: f32 = 0.381953;
 
@@ -103,8 +107,11 @@ impl Gmux {
         self.draw_bars();
     }
 
+    // This is the only function that needs to be changed.
     pub fn get_commands() -> Vec<String> {
         let mut commands = HashSet::new();
+
+        // 1. Scan PATH for executables (same as before)
         if let Ok(path_var) = env::var("PATH") {
             for path in path_var.split(':') {
                 if let Ok(entries) = fs::read_dir(path) {
@@ -120,10 +127,59 @@ impl Gmux {
                 }
             }
         }
+
+        // 2. Scan .desktop file directories and extract commands
+        let mut desktop_dirs = vec![
+            "/usr/share/applications".into(),
+            "/usr/local/share/applications".into(),
+        ];
+        if let Some(mut home_dir) = dirs::home_dir() {
+            home_dir.push(".local/share/applications");
+            desktop_dirs.push(home_dir);
+        }
+
+        for dir in desktop_dirs {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
+                        if let Ok(entry) = DesktopEntry::from_path::<&str>(&path, None) {
+                            if entry.type_() == Some("Application") && !entry.no_display() {
+                                if let Some(exec) = entry.exec() {
+                                    // This logic finds the first part of the Exec string that isn't
+                                    // an environment variable, which is usually the command itself.
+                                    let mut command_to_add = None;
+                                    for part in exec.split_whitespace() {
+                                        if !part.contains('=') {
+                                            // Take the filename if it's a path (e.g., /usr/bin/firefox -> firefox)
+                                            let command = Path::new(part)
+                                                .file_name()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or(part);
+                                            command_to_add = Some(command.to_string());
+                                            break; // We found the command, stop searching.
+                                        }
+                                    }
+                                    
+                                    if let Some(cmd) = command_to_add {
+                                        if !cmd.is_empty() {
+                                            commands.insert(cmd);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 3. Collect, sort, and return (same as before)
         let mut sorted_commands: Vec<_> = commands.into_iter().collect();
         sorted_commands.sort();
         sorted_commands
     }
+
     pub fn draw_launcher_bar(&mut self, mon_idx: usize) {
         let (prompt, input, candidate_indices, selected_idx) =
             if let BarState::Launcher { prompt, input, candidate_indices, selected_idx, .. } = &self.bar_state {
