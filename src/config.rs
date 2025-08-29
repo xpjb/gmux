@@ -48,11 +48,10 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         keysym: keysym::XK_i,
         action: Action::IncNMaster(1),
     });
-    // Example of a successful command
     keys.push(KeyBinding {
         mask: MOD,
         keysym: keysym::XK_d,
-        action: Action::Spawn("dmenu_run".to_string()),
+        action: Action::IncNMaster(-1),
     });
     keys.push(KeyBinding {
         mask: MOD,
