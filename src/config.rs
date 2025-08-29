@@ -1,8 +1,28 @@
 use crate::Action;
 use x11::{keysym, xlib};
+use lazy_static::lazy_static;
+use std::path::PathBuf;
 
 pub const BORDER_PX: i32 = 2;
 pub const BAR_H_PADDING: u32 = 15; // Horizontal padding for bar elements
+lazy_static! {
+    /// The path to the application's data directory.
+    pub static ref DATA_PATH: PathBuf = {
+        dirs::data_dir()
+            .map(|mut path| {
+                path.push("gmux");
+                path
+            })
+            .unwrap_or_else(|| PathBuf::from(".")) // Fallback to current directory
+    };
+
+    /// The path to the application's log file.
+    pub static ref LOG_PATH: PathBuf = {
+        let mut path = DATA_PATH.clone();
+        path.push("gmux.log");
+        path
+    };
+}
 
 // Statically-known strings
 pub const TAGS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
@@ -27,6 +47,17 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         mask: MOD | SHIFT_MASK,
         keysym: keysym::XK_Return,
         action: Action::Spawn("alacritty".to_string()),
+    });
+    keys.push(KeyBinding {
+        mask: MOD | SHIFT_MASK,
+        keysym: keysym::XK_l,
+        action: Action::Spawn(
+            format!(
+                "alacritty -e tail -f {}",
+                // Dereference LOG_PATH and convert it to a string slice
+                LOG_PATH.to_str().expect("Log path is not valid UTF-8")
+            )
+        )
     });
     keys.push(KeyBinding {
         mask: MOD,

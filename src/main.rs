@@ -5,7 +5,6 @@ use std::process::Command;
 use std::sync::mpsc::channel;
 use std::thread;
 use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config};
-use std::path::PathBuf;
 use std::fs::create_dir_all;
 
 mod ivec2;
@@ -344,48 +343,33 @@ impl Gmux {
         }
     }
 }
-
 /// Sets up the logger to write to a standard user-specific data directory.
 ///
 /// Returns the path to the log file for reference.
-fn setup_logger() -> PathBuf {
+fn setup_logger() {
     // 1. Determine the log file path
-    let log_path = dirs::data_dir()
-        .map(|mut path| {
-            path.push("gmux"); // Append our app's directory
-            path
-        })
-        .map(|path| {
-            // Create the directory if it doesn't exist
-            if let Err(e) = create_dir_all(&path) {
-                eprintln!("[ERROR] Failed to create log directory: {}", e);
-            }
-            path.join("gmux.log") // Append the log file name
-        })
-        .unwrap_or_else(|| {
-            // Fallback if the data directory can't be found
-            eprintln!("[WARN] Could not find a user data directory. Logging to ./gmux.log");
-            PathBuf::from("gmux.log")
-        });
-
+    let log_path = &*LOG_PATH;
+    let data_path = &*DATA_PATH;
+    if let Err(e) = create_dir_all(data_path) {
+        eprintln!("[ERROR] Failed to create log directory: {}", e);
+    }
     // 2. Initialize the logger
     CombinedLogger::init(vec![
         WriteLogger::new(
             LevelFilter::Info,
             Config::default(),
-            File::create(&log_path)
+            File::create(log_path)
                 .unwrap_or_else(|e| panic!("Failed to create log file at {:?}: {}", log_path, e)),
         ),
     ]).expect("Failed to initialize logger");
 
-    log_path // Return the path
 }
 
 fn main() {
-   let log_file_location = setup_logger();
+   setup_logger();
 
     log::info!("Starting gmux...");
-    log::info!("Log file is located at: {:?}", log_file_location);
+    log::info!("Log file is located at: {:?}", &*LOG_PATH);
 
     let (tx, rx) = channel();
     match Gmux::new(tx, rx) {
