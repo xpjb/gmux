@@ -4,10 +4,11 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+// Add SystemTime for checking modification timestamps
+use std::time::SystemTime; 
 use x11::{keysym, xlib};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
-// Add the new dependencies
 use freedesktop_desktop_entry::DesktopEntry;
 use dirs;
 
@@ -107,76 +108,118 @@ impl Gmux {
         self.draw_bars();
     }
 
-    // This is the only function that needs to be changed.
+    // This function is now refactored to use a cache.
     pub fn get_commands() -> Vec<String> {
-        let mut commands = HashSet::new();
+        // 1. Define cache path and identify all source directories.
+        let cache_dir = dirs::cache_dir().map(|p| p.join("gmux"));
+        let cache_path = cache_dir.as_ref().map(|p| p.join("commands"));
 
-        // 1. Scan PATH for executables (same as before)
-        if let Ok(path_var) = env::var("PATH") {
-            for path in path_var.split(':') {
-                if let Ok(entries) = fs::read_dir(path) {
-                    for entry in entries.flatten() {
-                        if let Ok(metadata) = entry.metadata() {
-                            if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
-                                if let Some(command) = entry.file_name().to_str() {
-                                    commands.insert(command.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Scan .desktop file directories and extract commands
-        let mut desktop_dirs = vec![
+        let mut source_dirs = vec![
             "/usr/share/applications".into(),
             "/usr/local/share/applications".into(),
         ];
         if let Some(mut home_dir) = dirs::home_dir() {
             home_dir.push(".local/share/applications");
-            desktop_dirs.push(home_dir);
+            source_dirs.push(home_dir);
         }
+        if let Ok(path_var) = env::var("PATH") {
+            for path in path_var.split(':') {
+                source_dirs.push(path.into());
+            }
+        }
+        source_dirs.dedup(); // Remove duplicate paths
 
-        for dir in desktop_dirs {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
-                        if let Ok(entry) = DesktopEntry::from_path::<&str>(&path, None) {
-                            if entry.type_() == Some("Application") && !entry.no_display() {
-                                if let Some(exec) = entry.exec() {
-                                    // This logic finds the first part of the Exec string that isn't
-                                    // an environment variable, which is usually the command itself.
-                                    let mut command_to_add = None;
-                                    for part in exec.split_whitespace() {
-                                        if !part.contains('=') {
-                                            // Take the filename if it's a path (e.g., /usr/bin/firefox -> firefox)
-                                            let command = Path::new(part)
-                                                .file_name()
-                                                .and_then(|s| s.to_str())
-                                                .unwrap_or(part);
-                                            command_to_add = Some(command.to_string());
-                                            break; // We found the command, stop searching.
+        // 2. Check if the cache is valid by comparing modification times.
+        if let Some(ref path) = cache_path {
+            if path.exists() {
+                if let Ok(cached_data) = fs::read_to_string(path) {
+                    if let Some((timestamps_line, commands_data)) = cached_data.split_once('\n') {
+                        let mut cache_is_valid = true;
+                        for part in timestamps_line.split_whitespace() {
+                            if let Some((path_str, mtime_str)) = part.split_once(':') {
+                                if let Ok(mtime) = mtime_str.parse::<u64>() {
+                                    if let Ok(metadata) = fs::metadata(path_str) {
+                                        let current_mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+                                            .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                                        if current_mtime != mtime {
+                                            cache_is_valid = false;
+                                            break;
                                         }
-                                    }
-                                    
-                                    if let Some(cmd) = command_to_add {
-                                        if !cmd.is_empty() {
-                                            commands.insert(cmd);
-                                        }
+                                    } else {
+                                        cache_is_valid = false; // Path doesn't exist anymore
+                                        break;
                                     }
                                 }
                             }
+                        }
+
+                        if cache_is_valid {
+                            return commands_data.lines().map(String::from).collect();
                         }
                     }
                 }
             }
         }
         
-        // 3. Collect, sort, and return (same as before)
+        // 3. CACHE MISS: Regenerate the command list.
+        let mut commands = HashSet::new();
+        let mut current_timestamps = Vec::new();
+
+        for dir in &source_dirs {
+            // Store modification time for the new cache file.
+            if let Ok(metadata) = fs::metadata(dir) {
+                 let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+                    .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                current_timestamps.push(format!("{}:{}", dir.to_string_lossy(), mtime));
+            }
+
+            // Scan directory for executables and .desktop files.
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Ok(metadata) = entry.metadata() {
+                        // Handle executables from PATH
+                        if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                             if let Some(command) = entry.file_name().to_str() {
+                                commands.insert(command.to_string());
+                            }
+                        }
+                    }
+                    
+                    // Handle .desktop files
+                    if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
+                         if let Ok(desktop_entry) = DesktopEntry::from_path::<&str>(&path, None) {
+                            if desktop_entry.type_() == Some("Application") && !desktop_entry.no_display() {
+                                if let Some(exec) = desktop_entry.exec() {
+                                    for part in exec.split_whitespace() {
+                                        if !part.contains('=') {
+                                            let command = Path::new(part).file_name()
+                                                .and_then(|s| s.to_str()).unwrap_or(part);
+                                            commands.insert(command.to_string());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut sorted_commands: Vec<_> = commands.into_iter().collect();
         sorted_commands.sort();
+
+        // 4. Write the new data to the cache file.
+        if let (Some(dir), Some(path)) = (cache_dir, cache_path) {
+            if fs::create_dir_all(dir).is_ok() {
+                let timestamps_line = current_timestamps.join(" ");
+                let commands_data = sorted_commands.join("\n");
+                let cache_content = format!("{}\n{}", timestamps_line, commands_data);
+                let _ = fs::write(path, cache_content);
+            }
+        }
+        
         sorted_commands
     }
 
