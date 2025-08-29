@@ -2,7 +2,6 @@ use std::time::Instant;
 use chrono::Local;
 use crate::*;
 
-pub const LAUNCHER_PROPORTION: f32 = 0.381953;
 
 #[derive(Clone)]
 pub enum BarState {
@@ -153,82 +152,4 @@ impl Gmux {
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
     }
 
-    fn draw_launcher_bar(&mut self, mon_idx: usize) {
-        let (prompt, input, candidate_indices, selected_idx) =
-            if let BarState::Launcher { prompt, input, candidate_indices, selected_idx, .. } = &self.bar_state {
-                (prompt.clone(), input.clone(), candidate_indices.clone(), *selected_idx)
-            } else {
-                return;
-            };
-
-        let mon = &mut self.mons[mon_idx];
-        let bar_wh = ivec2(mon.ww, self.bar_height);
-
-        self.xwrapper.rect(Colour::BarBackground, ivec2(0, 0), bar_wh, true);
-
-        let prompt_text = format!("{}{}", prompt, input);
-        let text_w = self.xwrapper.text_width(&prompt_text) + (BAR_H_PADDING * 2);
-        let min_prompt_w = (LAUNCHER_PROPORTION * mon.ww as f32) as u32;
-        let prompt_w = std::cmp::max(text_w, min_prompt_w);
-        self.xwrapper.text(
-            Colour::TextNormal,
-            ivec2(0, 0),
-            ivec2(prompt_w as _, self.bar_height),
-            BAR_H_PADDING,
-            &prompt_text,
-        );
-
-        let pos_x = prompt_w as i32;
-        let available_width = mon.ww as i32 - pos_x;
-
-        if candidate_indices.is_empty() {
-            self.xwrapper.map_drawable(mon.bar_window, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
-            return;
-        }
-
-        let candidate_widths: Vec<i32> = candidate_indices
-            .iter()
-            .map(|&command_idx| {
-                let candidate = &self.all_commands[command_idx];
-                (self.xwrapper.text_width(candidate) + (BAR_H_PADDING * 2)) as i32
-            })
-            .collect();
-
-        let total_width: i32 = candidate_widths.iter().sum();
-
-        let mut offset = 0;
-        if total_width > available_width {
-            let width_before_selected: i32 = candidate_widths[..selected_idx].iter().sum();
-            let selected_width = candidate_widths[selected_idx];
-            let center_pos = available_width / 2;
-
-            offset = width_before_selected - (center_pos - selected_width / 2);
-            let max_offset = total_width - available_width;
-            offset = offset.clamp(0, max_offset);
-        }
-
-        let mut current_x = 0;
-        for i in 0..candidate_indices.len() {
-            let w = candidate_widths[i];
-            let draw_pos_x = pos_x + current_x - offset;
-
-            if draw_pos_x + w > pos_x && draw_pos_x < mon.ww as i32 {
-                let command_idx = candidate_indices[i];
-                let candidate = &self.all_commands[command_idx];
-                let wh = ivec2(w as _, self.bar_height);
-
-                let (bg_col, fg_col) = if i == selected_idx {
-                    (Colour::BarForeground, Colour::TextNormal)
-                } else {
-                    (Colour::BarBackground, Colour::TextQuiet)
-                };
-
-                self.xwrapper.rect(bg_col, ivec2(draw_pos_x, 0), wh, true);
-                self.xwrapper.text(fg_col, ivec2(draw_pos_x, 0), wh, BAR_H_PADDING, candidate);
-            }
-            current_x += w;
-        }
-
-        self.xwrapper.map_drawable(mon.bar_window, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
-    }
 }

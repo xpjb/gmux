@@ -18,6 +18,7 @@ mod bar;
 mod error;
 mod client;
 mod monitor;
+mod launcher;
 
 pub use ivec2::*;
 pub use xwrapper::*;
@@ -31,6 +32,7 @@ pub use bar::*;
 pub use error::*;
 pub use client::*;
 pub use monitor::*;
+pub use launcher::*;
 
 const TAG_MASK: u32 = (1 << config::TAGS.len()) - 1;
 
