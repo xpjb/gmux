@@ -31,14 +31,6 @@ function log() {
 function install_app() {
     log INFO "Starting installation for $EXEC_NAME..."
 
-    # 1. Check for dependencies (cargo).
-    if ! command -v cargo &> /dev/null; then
-        log ERROR "Rust and Cargo are not installed. Please install the Rust toolchain first."
-        log INFO "Visit https://rustup.rs/ for installation instructions."
-        exit 1
-    fi
-    log INFO "Rust toolchain found."
-
     # 2. Compile the project in release mode for performance.
     # The `set -e` command at the top will cause the script to exit if this fails.
     log INFO "Compiling project in release mode... (This may take a moment)"
