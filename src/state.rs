@@ -2,7 +2,7 @@ use std::os::raw::{c_int, c_uint};
 use std::ffi::CString;
 use std::os::raw::c_uchar;
 use std::sync::mpsc::{Sender, Receiver};
-use x11::xlib;
+use x11::{keysym, xlib};
 use std::collections::HashMap;
 
 use crate::*;
@@ -281,7 +281,7 @@ impl Gmux {
             self.screen_height = self.xwrapper.display_height(self.screen);
             self.root = self.xwrapper.root_window(self.screen);
             
-            let fonts = &["monospace:size=12"]; // TODO: configurable
+            let fonts = &["monospace:size=16"]; // TODO: configurable
             if !self.xwrapper.fontset_create(fonts) {
                 panic!("no fonts could be loaded.");
             }
