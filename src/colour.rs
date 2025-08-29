@@ -14,10 +14,10 @@ pub enum Colour {
 impl Colour {
     pub fn get_colour(&self) -> [u8; 4] {
         match self {
-            Colour::BarBackground => [50, 50, 50, 255],
-            Colour::BarForeground => [0, 128, 255, 255],
+            Colour::BarBackground => [20, 20, 20, 255],
+            Colour::BarForeground => [0, 64, 200, 255],
             Colour::TextNormal => [255, 255, 255, 255],
-            Colour::TextQuiet => [102, 102, 102, 255],
+            Colour::TextQuiet => [122, 122, 122, 255],
             Colour::WindowActive => [255, 255, 0, 255],
             Colour::WindowInactive => [50, 50, 50, 255],
             Colour::Urgent => [255, 0, 0, 255], // Using red for urgent
