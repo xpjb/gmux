@@ -46,18 +46,20 @@ pub fn grab_keys() -> Vec<KeyBinding> {
     keys.push(KeyBinding {
         mask: MOD | SHIFT_MASK,
         keysym: keysym::XK_Return,
-        action: Action::Spawn("alacritty".to_string()),
+        action: Action::SpawnDirect("alacritty".to_string(), vec![]),
     });
     keys.push(KeyBinding {
         mask: MOD | SHIFT_MASK,
         keysym: keysym::XK_l,
-        action: Action::Spawn(
-            format!(
-                "alacritty -e tail -f {}",
-                // Dereference LOG_PATH and convert it to a string slice
-                LOG_PATH.to_str().expect("Log path is not valid UTF-8")
-            )
-        )
+        action: Action::SpawnDirect(
+            "alacritty".to_string(),
+            vec![
+                "-e".to_string(),
+                "tail".to_string(),
+                "-f".to_string(),
+                LOG_PATH.to_str().expect("Log path is not valid UTF-8").to_string(),
+            ],
+        ),
     });
     keys.push(KeyBinding {
         mask: MOD,

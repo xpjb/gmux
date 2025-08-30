@@ -4,6 +4,7 @@ use crate::*;
 #[derive(Clone, Debug)]
 pub enum Action {
     Spawn(String),
+    SpawnDirect(String, Vec<String>),
     ToggleBar,
     FocusStack(i32),
     IncNMaster(i32),
@@ -28,8 +29,11 @@ pub enum Action {
 impl Action {
     pub fn execute(&self, state: &mut Gmux) {
         match self {
-            Action::Spawn(_cmd) => {
-                // This will be handled in main.rs now
+            Action::Spawn(cmd) => {
+                state.spawn(cmd);
+            }
+            Action::SpawnDirect(program, args) => {
+                state.spawn_direct(program, args);
             }
             Action::EnterLauncherMode => {
                 state.enter_launcher_mode();
@@ -262,5 +266,84 @@ impl Action {
                 state.xwrapper.allow_events(xlib::ReplayPointer);
             }
         }
+    }
+}
+
+impl Gmux {
+    pub fn spawn(&mut self, cmd: &str) {
+        let sender = self.command_sender.clone();
+        let command_string = cmd.to_string();
+
+        thread::spawn(move || {
+            let output_result = Command::new("sh")
+                .arg("-c")
+                .arg(&command_string)
+                .output();
+
+            let output = match output_result {
+                Ok(o) => o,
+                Err(e) => {
+                    // The command failed to even start
+                    let error = GmuxError::Subprocess {
+                        command: command_string,
+                        stderr: e.to_string(),
+                    };
+                    let _ = sender.send(error);
+                    return;
+                }
+            };
+
+            // 1. Always log stderr if it's not empty
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                log::info!("stderr from '{}': {}", command_string, stderr.trim());
+            }
+
+            // 2. Only send an error to the bar on a non-zero exit code
+            if !output.status.success() {
+                let error = GmuxError::Subprocess {
+                    command: command_string,
+                    stderr: stderr.to_string(),
+                };
+                let _ = sender.send(error);
+            }
+        });
+    }
+
+    /// Spawns a command directly in a new thread to collect errors without blocking.
+    pub fn spawn_direct(&mut self, program: &str, args: &[String]) {
+        let sender = self.command_sender.clone();
+        let program_string = program.to_string();
+        let args_vec: Vec<String> = args.to_vec();
+        let full_command_str = format!("{} {}", program_string, args_vec.join(" "));
+
+        thread::spawn(move || {
+            let output_result = Command::new(&program_string)
+                .args(&args_vec)
+                .output(); // This blocks the new thread, NOT the main event loop.
+
+            let output = match output_result {
+                Ok(o) => o,
+                Err(e) => {
+                    let error = GmuxError::Subprocess {
+                        command: full_command_str,
+                        stderr: e.to_string(),
+                    };
+                    let _ = sender.send(error);
+                    return;
+                }
+            };
+
+            // Only send an error back if the command had a non-zero exit code.
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                log::info!("stderr from '{}': {}", full_command_str, stderr.trim());
+                let error = GmuxError::Subprocess {
+                    command: full_command_str,
+                    stderr,
+                };
+                let _ = sender.send(error);
+            }
+        });
     }
 }

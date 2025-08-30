@@ -46,46 +46,6 @@ enum CursorType {
 }
 
 impl Gmux {
-    fn spawn(&mut self, cmd: &str) {
-        let sender = self.command_sender.clone();
-        let command_string = cmd.to_string();
-
-        thread::spawn(move || {
-            let output_result = Command::new("sh")
-                .arg("-c")
-                .arg(&command_string)
-                .output();
-
-            let output = match output_result {
-                Ok(o) => o,
-                Err(e) => {
-                    // The command failed to even start
-                    let error = GmuxError::Subprocess {
-                        command: command_string,
-                        stderr: e.to_string(),
-                    };
-                    let _ = sender.send(error);
-                    return;
-                }
-            };
-
-            // 1. Always log stderr if it's not empty
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.is_empty() {
-                log::info!("stderr from '{}': {}", command_string, stderr.trim());
-            }
-
-            // 2. Only send an error to the bar on a non-zero exit code
-            if !output.status.success() {
-                let error = GmuxError::Subprocess {
-                    command: command_string,
-                    stderr: stderr.to_string(),
-                };
-                let _ = sender.send(error);
-            }
-        });
-    }
-
     fn process_error(&mut self, error: GmuxError) {
         // Log it as a high-priority error
         log::error!("{}", error);
@@ -119,10 +79,7 @@ impl Gmux {
                         if let BarState::Launcher { .. } = self.bar_state {
                             self.handle_launcher_keypress(&kev);
                         } else if let Some(action) = events::parse_key_press(self, &kev) {
-                            match action {
-                                Action::Spawn(cmd) => self.spawn(&cmd),
-                                _ => action.execute(self),
-                            }
+                            action.execute(self)
                         }
                     }
                     xwrapper::Event::ButtonPress(mut bev) => unsafe { events::button_press(self, &mut bev) },
@@ -145,7 +102,7 @@ impl Gmux {
         self.draw_bars(); // Redraw immediately to show the error
     }
 
-/// Finds a client by its absolute (x, y) coordinates on the screen.
+    /// Finds a client by its absolute (x, y) coordinates on the screen.
     fn client_at_pos(&self, x: i32, y: i32) -> Option<ClientHandle> {
         for (handle, c) in &self.clients {
             let m = &self.mons[c.monitor_idx];
