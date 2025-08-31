@@ -3,7 +3,7 @@ use x11::{keysym, xlib};
 use lazy_static::lazy_static;
 use std::path::PathBuf;
 
-pub const BORDER_PX: i32 = 2;
+pub const BORDER_PX: i32 = 6;
 lazy_static! {
     /// The path to the application's data directory.
     pub static ref DATA_PATH: PathBuf = {
@@ -24,7 +24,7 @@ lazy_static! {
 }
 
 // Statically-known strings
-pub const TAGS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+pub const TAGS: [&str; 5] = ["1", "2", "3", "4", "5"];
 
 pub struct KeyBinding {
     pub mask: u32,
@@ -101,11 +101,6 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         action: Action::Zoom,
     });
     keys.push(KeyBinding {
-        mask: MOD,
-        keysym: keysym::XK_Tab,
-        action: Action::ViewPrevTag,
-    });
-    keys.push(KeyBinding {
         mask: MOD | SHIFT_MASK,
         keysym: keysym::XK_c,
         action: Action::KillClient,
@@ -155,7 +150,16 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         keysym: keysym::XK_q,
         action: Action::Quit,
     });
-
+    keys.push(KeyBinding {
+        mask: MOD,
+        keysym: keysym::XK_Tab,
+        action: Action::CycleTag(1),
+    });
+    keys.push(KeyBinding {
+        mask: MOD | SHIFT_MASK,
+        keysym: keysym::XK_Tab,
+        action: Action::CycleTag(-1),
+    });
     keys.push(KeyBinding {
         mask: MOD,
         keysym: keysym::XK_w, // 'w' for warning
@@ -203,10 +207,6 @@ pub fn grab_keys() -> Vec<KeyBinding> {
         (keysym::XK_3, 2),
         (keysym::XK_4, 3),
         (keysym::XK_5, 4),
-        (keysym::XK_6, 5),
-        (keysym::XK_7, 6),
-        (keysym::XK_8, 7),
-        (keysym::XK_9, 8),
     ];
 
     for &(keysym, tag_idx) in TAG_KEYS {

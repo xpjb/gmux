@@ -14,13 +14,13 @@ pub enum Colour {
 impl Colour {
     pub fn get_colour(&self) -> [u8; 4] {
         match self {
-            Colour::BarBackground => [20, 20, 20, 255],
-            Colour::BarForeground => [0, 64, 200, 255],
-            Colour::TextNormal => [255, 255, 255, 255],
-            Colour::TextQuiet => [122, 122, 122, 255],
-            Colour::WindowActive => [255, 255, 0, 255],
-            Colour::WindowInactive => [50, 50, 50, 255],
-            Colour::Urgent => [255, 0, 0, 255], // Using red for urgent
+            Colour::BarBackground => [0x14, 0x14, 0x15, 0xFF],
+            Colour::BarForeground => [0x25, 0x25, 0x30, 0xFF],
+            Colour::TextNormal => [0xCD, 0xCD, 0xCD, 0xFF],
+            Colour::TextQuiet => [0x60, 0x60, 0x79, 0xFF],
+            Colour::WindowActive => [0xE0, 0xA3, 0x63, 0xFF],
+            Colour::WindowInactive => [0x25, 0x25, 0x30, 0xFF],
+            Colour::Urgent => [0xD8, 0x64, 0x7E, 0xFF], 
             Colour::DebugRed => [255, 0, 0, 255],
         }
     }
