@@ -2,7 +2,7 @@ use std::os::raw::{c_int, c_uint};
 use std::ffi::CString;
 use std::os::raw::c_uchar;
 use std::sync::mpsc::{Sender, Receiver};
-use x11::{keysym, xlib};
+use x11::xlib;
 use std::collections::HashMap;
 
 use crate::*;
@@ -233,7 +233,7 @@ impl Gmux {
     }
 
     pub fn new(command_sender: Sender<GmuxError>, command_receiver: Receiver<GmuxError>) -> Result<Gmux, String> {
-        let mut xwrapper = XWrapper::connect().expect("Failed to open display");
+        let xwrapper = XWrapper::connect().expect("Failed to open display");
         unsafe {
             let locale = CString::new("").unwrap();
             if libc::setlocale(libc::LC_CTYPE, locale.as_ptr()).is_null()

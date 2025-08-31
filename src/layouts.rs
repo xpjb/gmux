@@ -60,13 +60,13 @@ fn tile(state: &mut Gmux, mon_idx: usize) {
 
             if i < nmaster as usize {
                 let h = (wh - my) / (std::cmp::min(n, nmaster as usize) - i) as i32;
-                unsafe { state.resize(
+                state.resize(
                     handle,
                     wx,
                     wy + my,
                     mw - (2 * client_bw),
                     h - (2 * client_bw),
-                ) };
+                );
                 if my + h < wh {
                     my += h;
                 }

@@ -3,11 +3,10 @@
 * Test wezterm launch same working directory window plz
 * Run spin loop.. needs fps limit
 * Test performance of launcher caching too
-* Screenshot commands are fucked up
 * Getting an error in launcher state would probably cook you
-click to change focus too
-close discord no resize
-long window title must be clipped
+* click to change focus too
+* close discord no resize
+* long window title must be clipped
 fullscreen doesnt work
 random .desktop files show up in launcher lol?
 test kills the x session and orphans all the windows and theyre in some other session, cooked
@@ -29,7 +28,3 @@ nice red c48282
 
 bar fg maybe
 252530
-
-
-alt tab to go between tabs maybe lel, inc and dec
-why my bar width doesnt work?

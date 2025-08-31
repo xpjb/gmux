@@ -1,7 +1,6 @@
 use x11::xft::XftDraw;
-use std::ffi::{c_void, CString};
-use std::os::raw::{c_int, c_uint, c_long, c_uchar};
-use std::ptr;
+use std::ffi::CString;
+use std::os::raw::{c_int, c_uint};
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 use crate::colour::{ALL_COLOURS, Colour};
