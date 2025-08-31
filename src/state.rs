@@ -206,7 +206,7 @@ impl Gmux {
         }
     }
 
-    pub unsafe fn resize(&mut self, handle: ClientHandle, x: i32, y: i32, w: i32, h: i32, _interact: bool) {
+    pub fn resize(&mut self, handle: ClientHandle, x: i32, y: i32, w: i32, h: i32) {
         if let Some(client) = self.clients.get_mut(&handle) {
             client.oldx = client.x;
             client.x = x;
@@ -242,9 +242,9 @@ impl Gmux {
                 eprintln!("warning: no locale support");
             }
 
-            if let Err(e) = xwrapper.check_for_other_wm() {
-                return Err(e);
-            }
+            // if let Err(e) = xwrapper.check_for_other_wm() {
+            //     return Err(e);
+            // }
             xwrapper.set_default_error_handler();
         }
 
@@ -391,6 +391,38 @@ impl Gmux {
             self.focus(None);
         }
     }
+
+
+    /// Sends a synthetic ConfigureNotify event to a client.
+    pub fn send_configure_notify(&mut self, handle: ClientHandle) {
+        if let Some(c) = self.clients.get(&handle) {
+            let mut ce: xlib::XConfigureEvent = unsafe { std::mem::zeroed() };
+            ce.type_ = xlib::ConfigureNotify;
+            ce.display = self.xwrapper.display(); // FIXED: Use the public getter
+            ce.event = c.win.0;
+            ce.window = c.win.0;
+            ce.x = c.x;
+            ce.y = c.y;
+            ce.width = c.w;
+            ce.height = c.h;
+            ce.border_width = c.bw;
+            ce.above = 0; // None
+            ce.override_redirect = 0; // False
+
+            let mut ev: xlib::XEvent = ce.into();
+
+            // Send the event to the client window using the correct general-purpose method
+            // FIXED: Call the new, correct function with the correct arguments
+            self.xwrapper.send_xevent(
+                c.win,
+                false, // propagate
+                xlib::StructureNotifyMask,
+                &mut ev,
+            );
+        }
+    }
+
+
 }
 
 impl Drop for Gmux {

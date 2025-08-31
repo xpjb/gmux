@@ -52,6 +52,81 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     None
 }
 
+/// Handles ConfigureNotify events. This is the key handler for detecting screen
+/// changes after waking from sleep.
+pub unsafe extern "C" fn configure_notify(state: &mut Gmux, ev: &mut xlib::XConfigureEvent) {
+    // We only care about configure events on the root window.
+    if ev.window == state.root.0 {
+        log::info!("Root window configured. Re-arranging all monitors to adapt to potential screen changes.");
+        // In DWM, this triggers updategeom() and then a full rearrange.
+        // Calling arrange on all monitors is the correct equivalent.
+        state.arrange(None);
+    }
+}
+
+/// Handles Expose events, which are requests to redraw a window.
+/// This acts as a fallback to ensure the bar is redrawn if its contents are damaged.
+pub unsafe extern "C" fn expose(state: &mut Gmux, ev: &mut xlib::XExposeEvent) {
+    // ev.count == 0 means this is the last in a series of expose events.
+    if ev.count == 0 {
+        // Iterate through monitors to find which bar needs redrawing.
+        for i in 0..state.mons.len() {
+            if state.mons[i].bar_window.0 == ev.window {
+                log::info!("Bar for monitor {} exposed. Redrawing.", i);
+                state.draw_bar(i);
+                return; // Found the bar, no need to check others
+            }
+        }
+    }
+}
+
+/// Handles requests from client windows to change their own configuration (size, position).
+pub unsafe extern "C" fn configure_request(state: &mut Gmux, ev: &mut xlib::XConfigureRequestEvent) {
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        // If the window is managed by us, we must release our mutable borrow of the client
+        // before we can borrow `state` again to call other methods.
+        
+        // 1. Determine the action to take and gather necessary info.
+        let (is_floating, new_geom) = {
+            // Scope the mutable borrow so it's released immediately after.
+            let client = state.clients.get_mut(&handle).unwrap();
+            
+            if client.is_floating {
+                // If it's floating, update its internal state and store the new geometry.
+                if ev.value_mask & xlib::CWX as u64 != 0 { client.x = state.mons[client.monitor_idx].wx + ev.x; }
+                if ev.value_mask & xlib::CWY as u64 != 0 { client.y = state.mons[client.monitor_idx].wy + ev.y; }
+                if ev.value_mask & xlib::CWWidth as u64 != 0 { client.w = ev.width; }
+                if ev.value_mask & xlib::CWHeight as u64 != 0 { client.h = ev.height; }
+                (true, Some((client.x, client.y, client.w, client.h)))
+            } else {
+                // It's tiled, so we will ignore the request.
+                (false, None)
+            }
+        }; // `client` borrow ends here.
+
+        // 2. Now perform the action. We can mutably borrow `state` again.
+        if is_floating {
+            let (x, y, w, h) = new_geom.unwrap();
+            state.resize(handle, x, y, w, h);
+        } else {
+            // For tiled clients, ignore the request and enforce our layout.
+            state.send_configure_notify(handle);
+        }
+
+    } else {
+        // If we don't manage this window, just approve the request.
+        state.xwrapper.configure_window(
+            crate::xwrapper::Window(ev.window),
+            ev.x,
+            ev.y,
+            ev.width,
+            ev.height,
+            ev.border_width,
+        );
+    }
+    state.xwrapper.sync(false);
+}
+
 pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         if let Some(client) = state.clients.get(&handle) {

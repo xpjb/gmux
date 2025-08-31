@@ -1,6 +1,7 @@
 use x11::xft::XftDraw;
-use std::ffi::CString;
-use std::os::raw::{c_int, c_uint};
+use std::ffi::{c_void, CString};
+use std::os::raw::{c_int, c_uint, c_long, c_uchar};
+use std::ptr;
 use std::ptr::null_mut;
 use x11::{keysym, xft, xlib};
 use crate::colour::{ALL_COLOURS, Colour};
@@ -61,11 +62,6 @@ unsafe extern "C" fn x_error(_dpy: *mut xlib::Display, ee: *mut xlib::XErrorEven
         ee_ref.request_code, ee_ref.error_code
     );
 
-    // Call the default error handler which will exit
-    // This is not a direct equivalent, but it's the safest thing to do
-    // without the original xerrorxlib variable.
-    // In a more robust implementation, we might get the default handler and call it.
-    // For now, exiting is the clearest action.
     die("fatal X error");
     0 // Unreachable
 }
@@ -118,7 +114,7 @@ impl Drop for Font {
 type Color = xft::XftColor;
 
 // Newtype wrapper for Window
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Window(pub xlib::Window);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +139,7 @@ pub struct XWrapper {
     _root: xlib::Window,
     pub drawable: xlib::Drawable,
     gc: xlib::GC,
-    xftdraw: *mut XftDraw, // <<< ADDED: Cached XftDraw object
+    xftdraw: *mut XftDraw,
     pub fonts: Vec<Font>,
     colors: [Color; ALL_COLOURS.len()],
     pub atoms: Atoms,
@@ -162,14 +158,11 @@ impl XWrapper {
             let w = xlib::XDisplayWidth(dpy, screen) as u32;
             let h = xlib::XDisplayHeight(dpy, screen) as u32;
             
-            // Create the pixmap for double-buffering
             let drawable = xlib::XCreatePixmap(dpy, root, w, h, xlib::XDefaultDepth(dpy, screen) as u32);
             
-            // Create the Graphics Context for rectangle drawing
             let gc = xlib::XCreateGC(dpy, root, 0, null_mut());
             xlib::XSetLineAttributes(dpy, gc, 1, xlib::LineSolid, xlib::CapButt, xlib::JoinMiter);
 
-            // <<< ADDED: Create the XftDraw object ONCE for our pixmap
             let xftdraw = xft::XftDrawCreate(
                 dpy,
                 drawable,
@@ -177,7 +170,6 @@ impl XWrapper {
                 xlib::XDefaultColormap(dpy, screen),
             );
             if xftdraw.is_null() {
-                // Handle error appropriately, maybe return an Err
                 die("Failed to create XftDraw");
             }
 
@@ -190,7 +182,7 @@ impl XWrapper {
                 _root: root,
                 drawable,
                 gc,
-                xftdraw, // <<< ADDED: Store the cached object
+                xftdraw,
                 fonts: Vec::new(),
                 colors: [std::mem::zeroed(); ALL_COLOURS.len()],
                 atoms,
@@ -230,13 +222,10 @@ impl XWrapper {
         }
     }
 
-    /// Provides temporary access to the raw display pointer.
-    /// This should be phased out as more functionality is moved into the wrapper.
-    /*
-    pub fn dpy(&self) -> *mut xlib::Display {
+    /// ADDED: Public getter for the display pointer.
+    pub fn display(&self) -> *mut xlib::Display {
         self.dpy
     }
-    */
 
     pub fn fontset_create(&mut self, font_names: &[&str]) -> bool {
         let mut success = true;
@@ -301,7 +290,6 @@ impl XWrapper {
         }
     }
 
-    // <<< MODIFIED: This function is now much simpler and more efficient
     pub fn text(&mut self, color: Colour, tl: IVec2, wh: IVec2, lpad: u32, text: &str) {
         if self.fonts.is_empty() || text.is_empty() {
             return;
@@ -311,14 +299,11 @@ impl XWrapper {
             let clr = &mut self.colors[color as usize];
             let usedfont = &self.fonts[0];
     
-            // Calculate horizontal position with padding
             let x = tl.x + lpad as i32;
     
-            // Calculate vertical position for the text baseline to center it
             let font_height = (*usedfont.xfont).ascent + (*usedfont.xfont).descent;
             let y = tl.y + (wh.y - font_height as i32) / 2 + (*usedfont.xfont).ascent as i32;
     
-            // Draw the string using the cached xftdraw object
             xft::XftDrawStringUtf8(
                 self.xftdraw,
                 clr,
@@ -354,14 +339,6 @@ impl XWrapper {
             xlib::XSync(self.dpy, 0);
         }
     }
-
-    /*
-    pub fn intern_atom(&self, atom_name: &str) -> Result<xlib::Atom, XError> {
-        let c_str = CString::new(atom_name)
-            .map_err(|_| XError::AtomIntern(atom_name.to_string()))?;
-        unsafe { Ok(xlib::XInternAtom(self.dpy, c_str.as_ptr(), 0)) }
-    }
-    */
 
     pub fn set_error_handler(
         &self,
@@ -456,18 +433,6 @@ impl XWrapper {
             xlib::XChangeWindowAttributes(self.dpy, win.0, value_mask, attributes);
         }
     }
-
-    /*
-    pub fn create_font_cursor(&self, shape: u32) -> xlib::Cursor {
-        unsafe { xlib::XCreateFontCursor(self.dpy, shape) }
-    }
-
-    pub fn set_window_cursor(&self, win: Window, cursor_id: CursorId) {
-        unsafe {
-            xlib::XDefineCursor(self.dpy, win.0, cursor_id.0);
-        }
-    }
-    */
 
     pub fn create_font_cursor_as_id(&self, shape: u32) -> CursorId {
         CursorId(unsafe { xlib::XCreateFontCursor(self.dpy, shape) })
@@ -815,6 +780,7 @@ impl XWrapper {
         unsafe { xlib::XSync(self.dpy, if discard { 1 } else { 0 }) };
     }
 
+    // MODIFIED: This now includes the events needed for redrawing on wake.
     pub fn next_event(&self) -> Option<Event> {
         let mut ev = unsafe { std::mem::zeroed() };
         unsafe { xlib::XNextEvent(self.dpy, &mut ev) };
@@ -827,6 +793,10 @@ impl XWrapper {
             xlib::DestroyNotify => Some(Event::DestroyNotify(unsafe { ev.destroy_window })),
             xlib::EnterNotify => Some(Event::EnterNotify(unsafe { ev.crossing })),
             xlib::PropertyNotify => Some(Event::PropertyNotify(unsafe { ev.property })),
+            // ADDED:
+            xlib::ConfigureNotify => Some(Event::ConfigureNotify(unsafe { ev.configure })),
+            xlib::ConfigureRequest => Some(Event::ConfigureRequest(unsafe { ev.configure_request})),
+            xlib::Expose => Some(Event::Expose(unsafe { ev.expose })),
             _ => Some(Event::Unknown),
         }
     }
@@ -939,7 +909,8 @@ impl XWrapper {
                 | xlib::Mod5Mask)
     }
 
-    pub fn send_event(&self, win: Window, proto: xlib::Atom) -> bool {
+    /// RENAMED: This function is specifically for sending WM protocol messages.
+    pub fn send_wm_protocol_event(&self, win: Window, proto: xlib::Atom) -> bool {
         let protocols = self.get_wm_protocols(win);
         if protocols.contains(&proto) {
             let mut data = [0; 5];
@@ -949,6 +920,20 @@ impl XWrapper {
             true
         } else {
             false
+        }
+    }
+
+    /// ADDED: A general-purpose function to send any XEvent.
+    /// This is what send_configure_notify should be using.
+    pub fn send_xevent(&self, win: Window, propagate: bool, event_mask: i64, event: &mut xlib::XEvent) {
+        unsafe {
+            xlib::XSendEvent(
+                self.dpy,
+                win.0,
+                if propagate { 1 } else { 0 },
+                event_mask,
+                event,
+            );
         }
     }
 
@@ -993,7 +978,6 @@ impl XWrapper {
 impl Drop for XWrapper {
     fn drop(&mut self) {
         unsafe {
-            // <<< ADDED: Destroy the cached XftDraw object
             if !self.xftdraw.is_null() {
                 xft::XftDrawDestroy(self.xftdraw);
             }
@@ -1019,6 +1003,9 @@ pub enum Event {
     DestroyNotify(xlib::XDestroyWindowEvent),
     EnterNotify(xlib::XCrossingEvent),
     PropertyNotify(xlib::XPropertyEvent),
+    ConfigureNotify(xlib::XConfigureEvent),
+    ConfigureRequest(xlib::XConfigureRequestEvent),
+    Expose(xlib::XExposeEvent),
     Unknown,
 }
 
@@ -1068,3 +1055,4 @@ impl Atoms {
         self.netatom.as_ptr()
     }
 }
+

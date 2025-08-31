@@ -88,6 +88,14 @@ impl Gmux {
                     xwrapper::Event::DestroyNotify(mut drev) => unsafe { events::destroy_notify(self, &mut drev) },
                     xwrapper::Event::EnterNotify(mut erev) => unsafe { events::enter_notify(self, &mut erev) },
                     xwrapper::Event::PropertyNotify(mut prev) => unsafe { events::property_notify(self, &mut prev) },
+
+                    // ADDED: Handle screen configuration changes (e.g., wake from sleep)
+                    xwrapper::Event::ConfigureNotify(mut cev) => unsafe { events::configure_notify(self, &mut cev) },
+                    // ADDED: Handle requests to re-draw a window
+                    xwrapper::Event::Expose(mut eev) => unsafe { events::expose(self, &mut eev) },
+                    // ADDED: Handle requests from windows to configure themselves
+                    xwrapper::Event::ConfigureRequest(mut crev) => unsafe { events::configure_request(self, &mut crev) },
+
                     _ => (),
                 }
             }
@@ -122,7 +130,7 @@ impl Gmux {
                     if client_mon.lt[client_mon.selected_lt as usize].arrange.is_none()
                         || c.is_floating && !c.is_fullscreen
                     {
-                        unsafe { self.resize(handle, c.x, c.y, c.w, c.h, false) };
+                        self.resize(handle, c.x, c.y, c.w, c.h);
                     }
                 }
             }

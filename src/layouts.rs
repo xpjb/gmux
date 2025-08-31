@@ -66,21 +66,19 @@ fn tile(state: &mut Gmux, mon_idx: usize) {
                     wy + my,
                     mw - (2 * client_bw),
                     h - (2 * client_bw),
-                    false,
                 ) };
                 if my + h < wh {
                     my += h;
                 }
             } else {
                 let h = (wh - ty) / (n - i) as i32;
-                unsafe { state.resize(
+                state.resize(
                     handle,
                     wx + mw,
                     wy + ty,
                     ww - mw - (2 * client_bw),
                     h - (2 * client_bw),
-                    false,
-                ) };
+                );
                 if ty + h < wh {
                     ty += h;
                 }
@@ -104,14 +102,13 @@ fn monocle(state: &mut Gmux, mon_idx: usize) {
     for &handle in &tiled_clients {
         if let Some(client) = state.clients.get(&handle) {
             let client_bw = client.bw;
-            unsafe { state.resize(
+            state.resize(
                 handle,
                 wx,
                 wy,
                 ww - 2 * client_bw,
                 wh - 2 * client_bw,
-                false,
-            ) };
+            );
         }
     }
 }

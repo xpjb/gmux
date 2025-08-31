@@ -142,7 +142,7 @@ impl Action {
                 let selmon_idx = state.selected_monitor;
                 if let Some(sel_handle) = state.mons[selmon_idx].sel {
                     if let Some(client_to_kill) = state.clients.get(&sel_handle) {
-                        if !state.xwrapper.send_event(
+                        if !state.xwrapper.send_wm_protocol_event(
                             client_to_kill.win,
                             state.xwrapper.atoms.get(crate::xwrapper::Atom::Wm(crate::xwrapper::WM::Delete)),
                         ) {
