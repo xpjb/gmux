@@ -4,7 +4,6 @@ use lazy_static::lazy_static;
 use std::path::PathBuf;
 
 pub const BORDER_PX: i32 = 2;
-pub const BAR_H_PADDING: u32 = 15; // Horizontal padding for bar elements
 lazy_static! {
     /// The path to the application's data directory.
     pub static ref DATA_PATH: PathBuf = {

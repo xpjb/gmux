@@ -15,7 +15,7 @@ pub struct Gmux {
     pub screen_height: c_int,
     pub bar_height: c_int,
     pub _bar_line_width: c_int,
-    pub lr_padding: c_int,
+    pub lr_padding: u32,
     pub numlock_mask: c_uint,
     pub running: c_int,
     pub cursor: [CursorId; crate::CursorType::Last as usize],
@@ -34,6 +34,9 @@ pub struct Gmux {
 }
 
 impl Gmux {
+    pub fn get_text_width(&self, text: &str) -> u32 {
+        self.xwrapper.text_width(text) + self.lr_padding as u32
+    }
     pub unsafe fn window_to_monitor(&self, w: xlib::Window) -> usize {
         let wrapped_w = Window(w);
         if wrapped_w == self.root {
@@ -290,7 +293,7 @@ impl Gmux {
             let h = self.xwrapper.get_font_height() as i32;
             if h > 0 {
                 self.bar_height = h + 2;
-                self.lr_padding = h + 2;
+                self.lr_padding = (h + 2) as _;
             }
 
             // initialise status text sample

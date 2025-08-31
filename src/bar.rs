@@ -2,7 +2,6 @@ use std::time::Instant;
 use chrono::Local;
 use crate::*;
 
-
 #[derive(Clone)]
 pub enum BarState {
     Normal,
@@ -27,11 +26,13 @@ impl Gmux {
             }
         }
     }
+
     pub fn draw_bars(&mut self) {
         for i in 0..self.mons.len() {
             self.draw_bar(i);
         }
     }
+
     pub fn draw_bar(&mut self, mon_idx: usize) {
         let bar_state_clone = self.bar_state.clone();
         match bar_state_clone {
@@ -42,21 +43,20 @@ impl Gmux {
             BarState::Launcher { .. } => self.draw_launcher_bar(mon_idx),
         }
     }
-    pub fn draw_normal_bar(&mut self, mon_idx: usize) {
-        let mon = &mut self.mons[mon_idx];
-        mon.clickables.clear();
 
-        let bar_wh = ivec2(mon.ww, self.bar_height);
-        let barwin = mon.bar_window;
+    pub fn draw_normal_bar(&mut self, mon_idx: usize) {
+        self.mons[mon_idx].clickables.clear();
+
+        let bar_wh = ivec2(self.mons[mon_idx].ww, self.bar_height);
+        let barwin = self.mons[mon_idx].bar_window;
         let mut pos = ivec2(0, 0);
         let box_wh = ivec2(self.bar_height / 6 + 2, self.bar_height / 6 + 2);
-        let box_xy = ivec2(self.bar_height / 9, self.bar_height/9);
+        let box_xy = ivec2(self.bar_height / 9, self.bar_height / 9);
 
-    // --- 1. Clear the entire bar with the default background ---
+        // --- 1. Clear the entire bar with the default background ---
         self.xwrapper.rect(Colour::BarBackground, pos, bar_wh, true);
 
-    // --- 2. Render Left-aligned elements (Layout Symbol, Tags) ---
-
+        // --- 2. Render Left-aligned elements ---
         // Calculate occupied and urgent tags
         let mut occ: u32 = 0;
         let mut urg: u32 = 0;
@@ -69,71 +69,68 @@ impl Gmux {
             }
         }
 
-    // Draw tags
+        // Draw tags
         for i in 0..self.tags.len() {
             let tag = self.tags[i];
-        let selected = (mon.tagset[mon.selected_tags as usize] & 1 << i) != 0;
+            let selected = (self.mons[mon_idx].tagset[self.mons[mon_idx].selected_tags as usize] & 1 << i) != 0;
+            
+            // --- MODIFIED: Use the new helper function ---
+            let w = self.get_text_width(tag);
         
-            let w = self.xwrapper.text_width(tag) + (BAR_H_PADDING * 2);
-        
-        let (bg_col, fg_col) = if selected {
-            (Colour::BarForeground, Colour::TextNormal)
-        } else {
-            (Colour::BarBackground, Colour::TextQuiet)
-        };
+            let (bg_col, fg_col) = if selected {
+                (Colour::BarForeground, Colour::TextNormal)
+            } else {
+                (Colour::BarBackground, Colour::TextQuiet)
+            };
 
             let tag_wh = ivec2(w as _, self.bar_height);
             self.xwrapper.rect(bg_col, pos, tag_wh, true);
 
-        // Draw indicator for urgent windows on this tag
-        if (urg & (1 << i)) != 0 {
-            // Note: This draws a border around the entire tag, which differs from
-            // dwm's color inversion. This is fine, but just a heads-up.
+            // Draw indicator for urgent windows on this tag
+            if (urg & (1 << i)) != 0 {
                 self.xwrapper.rect(Colour::WindowActive, pos + ivec2(1, 1), tag_wh - ivec2(2, 2), false);
-        }
-        
-        // --- CORRECTED INDICATOR LOGIC ---
-        // 1. Check if ANY client is on this tag.
-        if (occ & (1 << i)) != 0 {
-            // 2. Determine if the box should be filled. It is filled if the
-            //    currently selected client is on this tag.
-            let is_filled = mon.sel.map_or(false, |sel_handle| {
-                self.clients.get(&sel_handle).map_or(false, |c| (c.tags & (1 << i)) != 0)
-            });
-
-            // 3. Draw the box using the current scheme's foreground color.
+            }
+            
+            // Draw indicator for occupied tags
+            if (occ & (1 << i)) != 0 {
+                let is_filled = self.mons[mon_idx].sel.map_or(false, |sel_handle| {
+                    self.clients.get(&sel_handle).map_or(false, |c| (c.tags & (1 << i)) != 0)
+                });
                 self.xwrapper.rect(fg_col, pos + box_xy, box_wh, is_filled);
-        }
-        // --- END CORRECTION ---
+            }
 
-            self.xwrapper.text(fg_col, pos, tag_wh, BAR_H_PADDING, tag);
+            // --- MODIFIED: Use lr_padding/2 for the text offset ---
+            self.xwrapper.text(fg_col, pos, tag_wh, self.lr_padding / 2, tag);
+
             let action = Action::ViewTag(1 << i, Some(mon_idx));
-            mon.clickables.push(Clickable{pos, size: tag_wh, action});
+            self.mons[mon_idx].clickables.push(Clickable{pos, size: tag_wh, action});
             pos.x += w as i32;
         }
 
-    // Right Text
-    let s = Local::now().format("%B %d %H:%M").to_string();
-        let w_right = self.xwrapper.text_width(&s) + (BAR_H_PADDING * 2);
-    let p_right = ivec2(bar_wh.x - w_right as i32, 0);
+        // --- 3. Render Right-aligned elements (Status Text) ---
+        let s = Local::now().format("%B %d %H:%M").to_string();
+        // --- MODIFIED: Use the new helper function ---
+        let w_right = self.get_text_width(&s);
+        let p_right = ivec2(bar_wh.x - w_right as i32, 0);
         let wh_right = ivec2(w_right as i32, self.bar_height);
         self.xwrapper.rect(Colour::BarBackground, p_right, wh_right, true);
-        self.xwrapper.text(Colour::TextQuiet, p_right, wh_right, BAR_H_PADDING, &s);
+        // --- MODIFIED: Use lr_padding/2 for the text offset ---
+        self.xwrapper.text(Colour::TextQuiet, p_right, wh_right, self.lr_padding / 2, &s);
 
+        // --- 4. Render Centered elements (Window Title) ---
+        let s = self.mons[mon_idx].sel.and_then(|h| self.clients.get(&h).map(|c| c.name.as_str()));
+        let (col, text_to_draw) = if let Some(name) = s {
+            (Colour::BarForeground, name)
+        } else {
+            (Colour::BarBackground, "")
+        };
 
-    // Center Text
-    let s = mon.sel.and_then(|h| self.clients.get(&h).map(|c| c.name.as_str()));
-    let (col, text_to_draw) = if let Some(name) = s {
-        (Colour::BarForeground, name)
-    } else {
-        (Colour::BarBackground, "")
-    };
-
-    let wh_center = (bar_wh - pos) - wh_right.proj_x();
+        let wh_center = (bar_wh - pos) - wh_right.proj_x();
         self.xwrapper.rect(col, pos, wh_center, true);
-        self.xwrapper.text(Colour::TextNormal, pos, wh_center, BAR_H_PADDING, text_to_draw);
+        // --- MODIFIED: Use lr_padding/2 for the text offset ---
+        self.xwrapper.text(Colour::TextNormal, pos, wh_center, self.lr_padding / 2, text_to_draw);
 
-    // --- 5. Map the drawing buffer to the screen ---
+        // --- 5. Map the drawing buffer to the screen ---
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
     }
 
@@ -146,10 +143,10 @@ impl Gmux {
         self.xwrapper.rect(Colour::Urgent, ivec2(0, 0), bar_wh, true);
 
         // 2. Draw centered text
-        self.xwrapper.text(Colour::TextNormal, ivec2(0, 0), bar_wh, BAR_H_PADDING, message);
+        // --- MODIFIED: Use lr_padding/2 for the text offset ---
+        self.xwrapper.text(Colour::TextNormal, ivec2(0, 0), bar_wh, self.lr_padding / 2, message);
 
         // 3. Map to screen
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
     }
-
 }
