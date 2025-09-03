@@ -18,6 +18,13 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     let mon = &state.mons[mon_idx];
 
     if ev.window == mon.bar_window.0 {
+        // Handle scroll events anywhere on the bar
+        match ev.button {
+            4 => return Some(Action::CycleTag(-1)), // Scroll up anywhere on bar
+            5 => return Some(Action::CycleTag(1)),  // Scroll down anywhere on bar
+            _ => {} // Continue to clickable detection for other buttons
+        }
+
         // Find what was clicked, if anything
         for clickable in &mon.clickables {
             if ev.x >= clickable.pos.x && ev.x < clickable.pos.x + clickable.size.x {
@@ -25,18 +32,13 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
                 match clickable.action {
                     Action::ViewTag(_, _) => {
                         // It's a tag
-                        match ev.button {
-                            1 => return Some(clickable.action.clone()), // Left click
-                            4 => return Some(Action::CycleTag(-1)), // Scroll up
-                            5 => return Some(Action::CycleTag(1)), // Scroll down
-                            _ => return None, // Other clicks on tags do nothing
+                        if ev.button == 1 {
+                            return Some(clickable.action.clone()); // Left click
                         }
                     },
                     _ => { // Not a tag
                         if ev.button == 1 {
                             return Some(clickable.action.clone()); // Left click for other elements
-                        } else {
-                            return None;
                         }
                     }
                 }

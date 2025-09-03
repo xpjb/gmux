@@ -252,7 +252,15 @@ impl Action {
                     if *direction > 0 { 0 } else { num_tags - 1 }
                 } else if tagset.count_ones() == 1 {
                     let current_tag_idx = tagset.trailing_zeros() as i32;
-                    (current_tag_idx + direction + num_tags) % num_tags
+                    let new_idx = current_tag_idx + direction;
+                    // Clamp to bounds instead of wrapping
+                    if new_idx < 0 {
+                        0 // Stay at tag 1 (index 0)
+                    } else if new_idx >= num_tags {
+                        num_tags - 1 // Stay at tag 5 (index 4)
+                    } else {
+                        new_idx
+                    }
                 } else {
                     return; // More than one tag selected, do nothing.
                 };
