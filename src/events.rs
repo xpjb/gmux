@@ -20,8 +20,8 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
     if ev.window == mon.bar_window.0 {
         // Handle scroll events anywhere on the bar
         match ev.button {
-            4 => return Some(Action::CycleTag(-1)), // Scroll up anywhere on bar
-            5 => return Some(Action::CycleTag(1)),  // Scroll down anywhere on bar
+            4 => return Some(Action::CycleTag(1)), // Scroll up anywhere on bar
+            5 => return Some(Action::CycleTag(-1)),  // Scroll down anywhere on bar
             _ => {} // Continue to clickable detection for other buttons
         }
 
