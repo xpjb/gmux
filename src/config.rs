@@ -4,6 +4,8 @@ use lazy_static::lazy_static;
 use std::path::PathBuf;
 
 pub const BORDER_PX: i32 = 6;
+pub const FONTS: &[&str] = &["monospace:size=20"];
+
 lazy_static! {
     /// The path to the application's data directory.
     pub static ref DATA_PATH: PathBuf = {
