@@ -56,7 +56,7 @@ pub fn parse_button_press(state: &Gmux, ev: &xlib::XButtonPressedEvent) -> Optio
 
 /// Handles ConfigureNotify events. This is the key handler for detecting screen
 /// changes after waking from sleep.
-pub unsafe extern "C" fn configure_notify(state: &mut Gmux, ev: &mut xlib::XConfigureEvent) {
+pub unsafe fn configure_notify(state: &mut Gmux, ev: &mut xlib::XConfigureEvent) {
     // We only care about configure events on the root window.
     if ev.window == state.root.0 {
         log::info!("Root window configured. Re-arranging all monitors to adapt to potential screen changes.");
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn configure_notify(state: &mut Gmux, ev: &mut xlib::XConf
 
 /// Handles Expose events, which are requests to redraw a window.
 /// This acts as a fallback to ensure the bar is redrawn if its contents are damaged.
-pub unsafe extern "C" fn expose(state: &mut Gmux, ev: &mut xlib::XExposeEvent) {
+pub unsafe fn expose(state: &mut Gmux, ev: &mut xlib::XExposeEvent) {
     // ev.count == 0 means this is the last in a series of expose events.
     if ev.count == 0 {
         // Iterate through monitors to find which bar needs redrawing.
@@ -83,7 +83,7 @@ pub unsafe extern "C" fn expose(state: &mut Gmux, ev: &mut xlib::XExposeEvent) {
 }
 
 /// Handles requests from client windows to change their own configuration (size, position).
-pub unsafe extern "C" fn configure_request(state: &mut Gmux, ev: &mut xlib::XConfigureRequestEvent) {
+pub unsafe fn configure_request(state: &mut Gmux, ev: &mut xlib::XConfigureRequestEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         // If the window is managed by us, we must release our mutable borrow of the client
         // before we can borrow `state` again to call other methods.
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn configure_request(state: &mut Gmux, ev: &mut xlib::XCon
     state.xwrapper.sync(false);
 }
 
-pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
+pub unsafe fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         if let Some(client) = state.clients.get(&handle) {
             let mon_idx = client.monitor_idx;
@@ -170,13 +170,13 @@ pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPr
 }
 
 // DestroyNotify handler to unmanage windows
-pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
+pub unsafe fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         state.unmanage(handle, true);
     }
 }
 
-pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionEvent) {
+pub unsafe fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionEvent) {
     // Handle motion events from client windows (via XSelectInput)
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         if let Some(client) = state.clients.get(&handle) {
@@ -212,7 +212,7 @@ pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionE
     }
 }
 
-pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossingEvent) {
+pub unsafe fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossingEvent) {
     // Ignore non-normal or inferior events (same filtering as dwm)
     if (ev.mode != xlib::NotifyNormal as i32 || ev.detail == xlib::NotifyInferior as i32)
         && ev.window != state.root.0
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn enter_notify(state: &mut Gmux, ev: &mut xlib::XCrossing
     }
 }
 
-pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapRequestEvent) {
+pub unsafe fn map_request(state: &mut Gmux, ev: &mut xlib::XMapRequestEvent) {
     if let Ok(mut wa) = state.xwrapper.get_window_attributes(crate::xwrapper::Window(ev.window)) {
         if wa.override_redirect != 0 {
             return;
@@ -245,7 +245,7 @@ pub unsafe extern "C" fn map_request(state: &mut Gmux, ev: &mut xlib::XMapReques
     }
 }
 
-pub unsafe extern "C" fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
+pub unsafe fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
     // Check if the event is for a window we manage
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         if let Some(client) = state.clients.get_mut(&handle) {
