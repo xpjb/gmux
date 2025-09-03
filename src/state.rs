@@ -285,7 +285,7 @@ impl Gmux {
                 client.y,
                 client.w,
                 client.h,
-                crate::config::BORDER_PX,
+                client.bw,
             );
             // FIXED: Send configure notification to the client like dwm does
             self.send_configure_notify(handle);
