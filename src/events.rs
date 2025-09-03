@@ -130,10 +130,7 @@ pub unsafe extern "C" fn configure_request(state: &mut Gmux, ev: &mut xlib::XCon
 }
 
 pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
-    log::info!("ButtonPress: window={:x}, button={}, x_root={}, y_root={}", ev.window, ev.button, ev.x_root, ev.y_root);
-    
     if let Some(handle) = state.window_to_client_handle(ev.window) {
-        log::info!("ButtonPress: found client {:?} for window {:x}", handle, ev.window);
         if let Some(client) = state.clients.get(&handle) {
             let mon_idx = client.monitor_idx;
             
@@ -180,14 +177,11 @@ pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestro
 }
 
 pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionEvent) {
-    log::info!("MotionNotify: window={:x}, root={:x}, x_root={}, y_root={}", ev.window, state.root.0, ev.x_root, ev.y_root);
-    
     // Handle motion events from client windows (via XSelectInput)
     if let Some(handle) = state.window_to_client_handle(ev.window) {
         if let Some(client) = state.clients.get(&handle) {
             // Focus this client if it's not already focused
             if state.mons[client.monitor_idx].sel != Some(handle) {
-                log::info!("MotionNotify: client motion focusing {:?} (window={:x})", handle, client.win.0);
                 state.focus(Some(handle));
             }
             // Note: No need for allow_events with XSelectInput - motion events aren't "grabbed"

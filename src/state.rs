@@ -292,7 +292,6 @@ impl Gmux {
             self.xwrapper.ungrab_button(client.win, xlib::AnyButton as u32, xlib::AnyModifier);
             
             if !focused {
-                log::info!("Setting up grabs for unfocused window {:x}", client.win.0);
                 // For unfocused windows, grab button presses
                 self.xwrapper.grab_button(
                     client.win,
@@ -313,7 +312,6 @@ impl Gmux {
                     xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask | xlib::PointerMotionMask
                 );
             } else {
-                log::info!("Setting up normal input for focused window {:x}", client.win.0);
                 // For focused windows, use normal event mask (no motion grab)
                 self.xwrapper.select_input(
                     client.win,
@@ -331,7 +329,7 @@ impl Gmux {
             if libc::setlocale(libc::LC_CTYPE, locale.as_ptr()).is_null()
                 || xlib::XSupportsLocale() == 0
             {
-                eprintln!("warning: no locale support");
+                log::warn!("warning: no locale support");
             }
 
             // if let Err(e) = xwrapper.check_for_other_wm() {
