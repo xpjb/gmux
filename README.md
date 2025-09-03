@@ -7,12 +7,17 @@
 * click to change focus too
 * close discord no resize
 * long window title must be clipped
+* I dont think launcher refresh works either
 fullscreen doesnt work
 random .desktop files show up in launcher lol?
 test kills the x session and orphans all the windows and theyre in some other session, cooked
 Rules: browser on 5
 Discord on 4
 etc
+I think it needs to resize app after it resizes it if that makes sense.
+alert tag doesnt work either
+scroll the top bar
+stiff edges tho no wrapping
 
 Colours (vague colours)
 bg = 141415
