@@ -208,13 +208,17 @@ impl Gmux {
         }
 
         if let Some(h) = handle {
-            let client_win = if let Some(c) = self.clients.get(&h) {
+            // Clear urgent flag when focusing this client
+            if let Some(c) = self.clients.get_mut(&h) {
+                if c.is_urgent {
+                    c.is_urgent = false;
+                }
                 if c.monitor_idx != self.selected_monitor {
                     self.selected_monitor = c.monitor_idx;
                 }
-                if c.is_urgent {
-                    // seturgent(c, 0);
-                }
+            }
+            
+            let client_win = if let Some(c) = self.clients.get(&h) {
                 Some(c.win)
             } else {
                 None

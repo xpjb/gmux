@@ -863,6 +863,7 @@ impl XWrapper {
             xlib::ConfigureNotify => Some(Event::ConfigureNotify(unsafe { ev.configure })),
             xlib::ConfigureRequest => Some(Event::ConfigureRequest(unsafe { ev.configure_request})),
             xlib::Expose => Some(Event::Expose(unsafe { ev.expose })),
+            xlib::ClientMessage => Some(Event::ClientMessage(unsafe { ev.client_message })),
             _ => Some(Event::Unknown),
         }
     }
@@ -1072,6 +1073,7 @@ pub enum Event {
     ConfigureNotify(xlib::XConfigureEvent),
     ConfigureRequest(xlib::XConfigureRequestEvent),
     Expose(xlib::XExposeEvent),
+    ClientMessage(xlib::XClientMessageEvent),
     Unknown,
 }
 

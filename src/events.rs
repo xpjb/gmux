@@ -268,3 +268,33 @@ pub unsafe fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
         }
     }
 }
+
+/// Handles ClientMessage events, particularly NetActiveWindow requests
+pub unsafe fn client_message(state: &mut Gmux, ev: &mut xlib::XClientMessageEvent) {
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        if ev.message_type == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::ActiveWindow)) {
+            let should_mark_urgent = if let Some(client) = state.clients.get(&handle) {
+                // If this is not the currently selected client and it's not already urgent, set urgent
+                let is_selected = state.mons[state.selected_monitor].sel == Some(handle);
+                !is_selected && !client.is_urgent
+            } else {
+                false
+            };
+            
+            if should_mark_urgent {
+                let client_name = if let Some(client) = state.clients.get_mut(&handle) {
+                    client.is_urgent = true;
+                    client.name.clone()
+                } else {
+                    String::new()
+                };
+                
+                if !client_name.is_empty() {
+                    // Redraw bars to show urgent indicator
+                    state.draw_bars();
+                    log::info!("Window '{}' requested focus, marked as urgent", client_name);
+                }
+            }
+        }
+    }
+}

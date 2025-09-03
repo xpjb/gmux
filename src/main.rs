@@ -154,6 +154,8 @@ impl Gmux {
                     xwrapper::Event::Expose(mut eev) => unsafe { events::expose(self, &mut eev) },
                     // ADDED: Handle requests from windows to configure themselves
                     xwrapper::Event::ConfigureRequest(mut crev) => unsafe { events::configure_request(self, &mut crev) },
+                    // ADDED: Handle ClientMessage events for NetActiveWindow
+                    xwrapper::Event::ClientMessage(mut cmev) => unsafe { events::client_message(self, &mut cmev) },
 
                     _ => (),
                 }
@@ -344,7 +346,15 @@ impl Gmux {
 
             self.xwrapper.map_window(sel_client.win);
         }
-        self.focus(Some(handle));
+        
+        // Only focus the new client if it's visible on the current tags
+        // Otherwise, it should be marked as urgent when it requests focus later
+        if let Some(client) = self.clients.get(&handle) {
+            let current_tags = self.mons[self.selected_monitor].tagset[self.mons[self.selected_monitor].selected_tags as usize];
+            if (client.tags & current_tags) != 0 {
+                self.focus(Some(handle));
+            }
+        }
     }
 
 

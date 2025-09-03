@@ -73,11 +73,15 @@ impl Gmux {
         for i in 0..self.tags.len() {
             let tag = self.tags[i];
             let selected = (self.mons[mon_idx].tagset[self.mons[mon_idx].selected_tags as usize] & 1 << i) != 0;
+            let is_urgent = (urg & (1 << i)) != 0;
             
             // --- MODIFIED: Use the new helper function ---
             let w = self.get_text_width(tag);
         
-            let (bg_col, fg_col) = if selected {
+            let (bg_col, fg_col) = if is_urgent {
+                // Urgent tags get urgent color scheme regardless of selection
+                (Colour::Urgent, Colour::TextNormal)
+            } else if selected {
                 (Colour::BarForeground, Colour::TextNormal)
             } else {
                 (Colour::BarBackground, Colour::TextQuiet)
@@ -85,11 +89,6 @@ impl Gmux {
 
             let tag_wh = ivec2(w as _, self.bar_height);
             self.xwrapper.rect(bg_col, pos, tag_wh, true);
-
-            // Draw indicator for urgent windows on this tag
-            if (urg & (1 << i)) != 0 {
-                self.xwrapper.rect(Colour::WindowActive, pos + ivec2(1, 1), tag_wh - ivec2(2, 2), false);
-            }
             
             // Draw indicator for occupied tags
             if (occ & (1 << i)) != 0 {
