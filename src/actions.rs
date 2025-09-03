@@ -24,6 +24,7 @@ pub enum Action {
     CycleTag(i32),
     FocusClient(ClientHandle),
     EnterLauncherMode,
+    TestPanic,
 }
 
 impl Action {
@@ -272,6 +273,10 @@ impl Action {
                 state.focus(Some(*handle));
                 state.restack(state.selected_monitor);
                 state.xwrapper.allow_events(xlib::ReplayPointer);
+            }
+            Action::TestPanic => {
+                log::info!("Test panic action triggered - this should be logged before panic");
+                panic!("Test panic for logging verification");
             }
         }
     }

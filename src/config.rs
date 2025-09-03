@@ -239,6 +239,13 @@ pub fn grab_keys() -> Vec<KeyBinding> {
                 .to_string(),
         ),
     });
+    
+    // TEMPORARY: Test panic binding (Alt+Shift+P for panic test)
+    keys.push(KeyBinding {
+        mask: MOD | SHIFT_MASK,
+        keysym: keysym::XK_p,
+        action: Action::TestPanic,
+    });
 
     const TAG_KEYS: &[(u32, u32)] = &[
         (keysym::XK_1, 0),

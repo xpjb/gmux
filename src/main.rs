@@ -1,11 +1,13 @@
 use std::time::{Duration, Instant};
 use x11::xlib;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::process::Command;
 use std::sync::mpsc::channel;
 use std::thread;
 use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config};
 use std::fs::create_dir_all;
+use std::panic;
+use std::io::Write;
 
 mod ivec2;
 mod xwrapper;
@@ -368,6 +370,43 @@ impl Gmux {
         }
     }
 }
+
+/// Sets up a panic hook that writes panic information to the log file
+fn setup_panic_hook() {
+    let log_path = LOG_PATH.clone();
+    panic::set_hook(Box::new(move |panic_info| {
+        let panic_msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            format!("panic occurred: {}", s)
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            format!("panic occurred: {}", s)
+        } else {
+            "panic occurred: unknown payload".to_string()
+        };
+
+        let location = if let Some(location) = panic_info.location() {
+            format!(" at {}:{}:{}", location.file(), location.line(), location.column())
+        } else {
+            " at unknown location".to_string()
+        };
+
+        let full_msg = format!("PANIC: {}{}\n", panic_msg, location);
+        
+        // Try to write to stderr first (may work even if logging is broken)
+        eprintln!("{}", full_msg.trim());
+        
+        // Try to append to log file
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path) 
+        {
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(file, "[{}] [ERROR] {}", timestamp, full_msg.trim());
+            let _ = file.flush();
+        }
+    }));
+}
+
 /// Sets up the logger to write to a standard user-specific data directory.
 ///
 /// Returns the path to the log file for reference.
@@ -391,10 +430,12 @@ fn setup_logger() {
 }
 
 fn main() {
-   setup_logger();
+    setup_logger();
+    setup_panic_hook();
 
     log::info!("Starting gmux...");
     log::info!("Log file is located at: {:?}", &*LOG_PATH);
+    log::info!("Panic handler installed - panics will be logged");
 
     let (tx, rx) = channel();
     match Gmux::new(tx, rx) {
