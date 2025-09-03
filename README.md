@@ -1,4 +1,8 @@
 # Issues
+Focus should also change on mouse moved or click inside window, refer to how dwm does its focus
+
+
+# Nice To Have
 * Maybe a notification for successful screenshot too
 * Test wezterm launch same working directory window plz
 * Run spin loop.. needs fps limit
@@ -6,13 +10,13 @@
 * Getting an error in launcher state would probably cook you
 * click to change focus too
 * close discord no resize
-* long window title must be clipped
 * I dont think launcher refresh works either
 fullscreen doesnt work
 random .desktop files show up in launcher lol?
 test kills the x session and orphans all the windows and theyre in some other session, cooked
 Rules: browser on 5
 Discord on 4
+even the highlight tag wasnt workin
 etc
 I think it needs to resize app after it resizes it if that makes sense.
 alert tag doesnt work either

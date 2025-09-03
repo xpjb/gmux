@@ -46,6 +46,63 @@ enum CursorType {
 }
 
 impl Gmux {
+    fn apply_rules(&self, client: &mut Client) {
+        let rules = config::rules();
+        
+        // Get window properties
+        let title = if client.name.is_empty() { None } else { Some(client.name.clone()) };
+        let (instance, class) = if let Some((inst, cls)) = self.xwrapper.get_window_class(client.win) {
+            (if inst.is_empty() { None } else { Some(inst) }, 
+             if cls.is_empty() { None } else { Some(cls) })
+        } else {
+            (None, None)
+        };
+        
+        // Find matching rule
+        for rule in &rules {
+            let class_matches = match (&rule.class, &class) {
+                (Some(rule_class), Some(window_class)) => {
+                    rule_class.to_lowercase() == window_class.to_lowercase()
+                }
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            
+            let instance_matches = match (&rule.instance, &instance) {
+                (Some(rule_instance), Some(window_instance)) => {
+                    rule_instance.to_lowercase() == window_instance.to_lowercase()
+                }
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            
+            let title_matches = match (&rule.title, &title) {
+                (Some(rule_title), Some(window_title)) => {
+                    window_title.to_lowercase().contains(&rule_title.to_lowercase())
+                }
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            
+            if class_matches && instance_matches && title_matches {
+                // Apply the rule
+                client.tags = rule.tags;
+                client.is_floating = rule.is_floating;
+                
+                // Apply monitor assignment if specified
+                if rule.monitor >= 0 && (rule.monitor as usize) < self.mons.len() {
+                    client.monitor_idx = rule.monitor as usize;
+                } else {
+                    client.monitor_idx = self.selected_monitor;
+                }
+                
+                log::info!("Applied rule to window '{}' (class: {:?}, instance: {:?}): tags={:b}, floating={}, monitor={}", 
+                          client.name, class, instance, client.tags, client.is_floating, client.monitor_idx);
+                break; // Use first matching rule
+            }
+        }
+    }
+
     fn process_error(&mut self, error: GmuxError) {
         // Log it as a high-priority error
         log::error!("{}", error);
@@ -231,9 +288,12 @@ impl Gmux {
         };
 
         if !is_transient {
-            // Assign to currently selected tag set so client is visible
-                client.tags = self.mons[self.selected_monitor].tagset[self.mons[self.selected_monitor].selected_tags as usize];
-                client.monitor_idx = self.selected_monitor;
+            // First set default tags and monitor
+            client.tags = self.mons[self.selected_monitor].tagset[self.mons[self.selected_monitor].selected_tags as usize];
+            client.monitor_idx = self.selected_monitor;
+            
+            // Then apply rules which may override the defaults
+            self.apply_rules(&mut client);
         }
 
         // 3. Process size hints

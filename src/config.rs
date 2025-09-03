@@ -26,6 +26,45 @@ lazy_static! {
 // Statically-known strings
 pub const TAGS: [&str; 5] = ["1", "2", "3", "4", "5"];
 
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub class: Option<String>,
+    pub instance: Option<String>, 
+    pub title: Option<String>,
+    pub tags: u32,
+    pub is_floating: bool,
+    pub monitor: i32, // -1 for current monitor
+}
+
+pub fn rules() -> Vec<Rule> {
+    vec![
+        Rule {
+            class: Some("firefox".to_string()),
+            instance: None,
+            title: None,
+            tags: 1 << 4, // Tag 5
+            is_floating: false,
+            monitor: -1,
+        },
+        Rule {
+            class: Some("discord".to_string()),
+            instance: None,
+            title: None,
+            tags: 1 << 3, // Tag 4
+            is_floating: false,
+            monitor: -1,
+        },
+        Rule {
+            class: Some("steam".to_string()),
+            instance: None,
+            title: None,
+            tags: 1 << 2, // Tag 4
+            is_floating: false,
+            monitor: -1,
+        },
+    ]
+}
+
 pub struct KeyBinding {
     pub mask: u32,
     pub keysym: u32,

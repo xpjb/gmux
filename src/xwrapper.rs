@@ -570,6 +570,39 @@ impl XWrapper {
         }
     }
 
+    pub fn get_window_class(&self, win: Window) -> Option<(String, String)> {
+        unsafe {
+            use std::ffi::CStr;
+            let mut class_hints: xlib::XClassHint = std::mem::zeroed();
+            
+            if xlib::XGetClassHint(self.dpy, win.0, &mut class_hints) != 0 {
+                let instance = if !class_hints.res_name.is_null() {
+                    CStr::from_ptr(class_hints.res_name).to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                };
+                
+                let class = if !class_hints.res_class.is_null() {
+                    CStr::from_ptr(class_hints.res_class).to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                };
+                
+                // Free the allocated memory
+                if !class_hints.res_name.is_null() {
+                    xlib::XFree(class_hints.res_name as *mut _);
+                }
+                if !class_hints.res_class.is_null() {
+                    xlib::XFree(class_hints.res_class as *mut _);
+                }
+                
+                Some((instance, class))
+            } else {
+                None
+            }
+        }
+    }
+
     pub fn get_wm_normal_hints(&self, win: Window) -> Result<xlib::XSizeHints, ()> {
         unsafe {
             let mut hints: xlib::XSizeHints = std::mem::zeroed();
