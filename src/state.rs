@@ -37,6 +37,65 @@ impl Gmux {
     pub fn get_text_width(&self, text: &str) -> u32 {
         self.xwrapper.text_width(text) + self.lr_padding as u32
     }
+
+    /// Clips text to fit within the given width, adding "..." if truncated
+    pub fn clip_text_to_width(&self, text: &str, max_width: i32) -> String {
+        if max_width <= 0 {
+            return String::new();
+        }
+        
+        let max_width_u32 = max_width as u32;
+        
+        // If the text already fits, return it as-is
+        if self.get_text_width(text) <= max_width_u32 {
+            return text.to_string();
+        }
+        
+        // Calculate width of ellipsis
+        let ellipsis = "...";
+        let ellipsis_width = self.get_text_width(ellipsis);
+        
+        // If even ellipsis doesn't fit, return empty string
+        if ellipsis_width > max_width_u32 {
+            return String::new();
+        }
+        
+        // Binary search to find the maximum length that fits with ellipsis
+        let available_width = max_width_u32 - ellipsis_width;
+        let mut left = 0;
+        let mut right = text.len();
+        let mut best_len = 0;
+        
+        while left <= right {
+            let mid = (left + right) / 2;
+            let truncated = &text[..mid];
+            let truncated_width = self.get_text_width(truncated);
+            
+            if truncated_width <= available_width {
+                best_len = mid;
+                if mid == text.len() {
+                    break;
+                }
+                left = mid + 1;
+            } else {
+                if mid == 0 {
+                    break;
+                }
+                right = mid - 1;
+            }
+        }
+        
+        // Make sure we don't break on UTF-8 character boundaries
+        while best_len > 0 && !text.is_char_boundary(best_len) {
+            best_len -= 1;
+        }
+        
+        if best_len == 0 {
+            ellipsis.to_string()
+        } else {
+            format!("{}{}", &text[..best_len], ellipsis)
+        }
+    }
     pub unsafe fn window_to_monitor(&self, w: xlib::Window) -> usize {
         let wrapped_w = Window(w);
         if wrapped_w == self.root {

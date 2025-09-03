@@ -19,6 +19,8 @@ alert tag doesnt work either
 scroll the top bar
 stiff edges tho no wrapping
 
+any mouse movement or click needs to put focus
+
 Colours (vague colours)
 bg = 141415
 orange = e0a363

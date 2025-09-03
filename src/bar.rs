@@ -118,17 +118,19 @@ impl Gmux {
         self.xwrapper.text(Colour::TextQuiet, p_right, wh_right, self.lr_padding / 2, &s);
 
         // --- 4. Render Centered elements (Window Title) ---
+        let wh_center = (bar_wh - pos) - wh_right.proj_x();
         let s = self.mons[mon_idx].sel.and_then(|h| self.clients.get(&h).map(|c| c.name.as_str()));
         let (col, text_to_draw) = if let Some(name) = s {
-            (Colour::BarForeground, name)
+            // Clip the window title to fit within the available center area
+            let clipped_name = self.clip_text_to_width(name, wh_center.x);
+            (Colour::BarForeground, clipped_name)
         } else {
-            (Colour::BarBackground, "")
+            (Colour::BarBackground, String::new())
         };
 
-        let wh_center = (bar_wh - pos) - wh_right.proj_x();
         self.xwrapper.rect(col, pos, wh_center, true);
         // --- MODIFIED: Use lr_padding/2 for the text offset ---
-        self.xwrapper.text(Colour::TextNormal, pos, wh_center, self.lr_padding / 2, text_to_draw);
+        self.xwrapper.text(Colour::TextNormal, pos, wh_center, self.lr_padding / 2, &text_to_draw);
 
         // --- 5. Map the drawing buffer to the screen ---
         self.xwrapper.map_drawable(barwin, 0, 0, bar_wh.x as u32, bar_wh.y as u32);
