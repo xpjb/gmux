@@ -808,6 +808,40 @@ impl XWrapper {
         unsafe { xlib::XKillClient(self.dpy, win.0) };
     }
 
+    pub fn grab_button(
+        &self,
+        win: Window,
+        button: u32,
+        modifiers: u32,
+        owner_events: bool,
+        event_mask: u32,
+        pointer_mode: i32,
+        keyboard_mode: i32,
+        confine_to: Option<Window>,
+        cursor: Option<xlib::Cursor>,
+    ) {
+        unsafe {
+            xlib::XGrabButton(
+                self.dpy,
+                button,
+                modifiers,
+                win.0,
+                if owner_events { 1 } else { 0 },
+                event_mask,
+                pointer_mode,
+                keyboard_mode,
+                confine_to.map_or(0, |w| w.0),
+                cursor.unwrap_or(0),
+            );
+        }
+    }
+
+    pub fn ungrab_button(&self, win: Window, button: u32, modifiers: u32) {
+        unsafe {
+            xlib::XUngrabButton(self.dpy, button, modifiers, win.0);
+        }
+    }
+
     pub fn sync(&self, discard: bool) {
         unsafe { xlib::XSync(self.dpy, if discard { 1 } else { 0 }) };
     }

@@ -286,9 +286,42 @@ impl Gmux {
         }
     }
 
-    fn grab_buttons(&mut self, _handle: ClientHandle, _focused: bool) {
-        // For now, this is a stub
-        // idk if its needed, i dont intend to support monocle or floating or resizing etc, unless it would be great for resizing camera or something
+    fn grab_buttons(&mut self, handle: ClientHandle, focused: bool) {
+        if let Some(client) = self.clients.get(&handle) {
+            // First ungrab all existing button grabs
+            self.xwrapper.ungrab_button(client.win, xlib::AnyButton as u32, xlib::AnyModifier);
+            
+            if !focused {
+                log::info!("Setting up grabs for unfocused window {:x}", client.win.0);
+                // For unfocused windows, grab button presses
+                self.xwrapper.grab_button(
+                    client.win,
+                    xlib::AnyButton as u32,
+                    xlib::AnyModifier,
+                    false, // owner_events = False
+                    (xlib::ButtonPressMask | xlib::ButtonReleaseMask) as u32,
+                    xlib::GrabModeSync,
+                    xlib::GrabModeSync,
+                    None,
+                    None,
+                );
+                
+                // For motion events, we need to use XSelectInput with PointerMotionMask
+                // This will send motion events to the WM instead of the application
+                self.xwrapper.select_input(
+                    client.win,
+                    xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask | xlib::PointerMotionMask
+                );
+            } else {
+                log::info!("Setting up normal input for focused window {:x}", client.win.0);
+                // For focused windows, use normal event mask (no motion grab)
+                self.xwrapper.select_input(
+                    client.win,
+                    xlib::EnterWindowMask | xlib::FocusChangeMask | xlib::PropertyChangeMask
+                );
+            }
+            // For focused windows, we don't need to grab buttons - they get events normally
+        }
     }
 
     pub fn new(command_sender: Sender<GmuxError>, command_receiver: Receiver<GmuxError>) -> Result<Gmux, String> {

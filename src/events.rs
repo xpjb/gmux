@@ -130,14 +130,23 @@ pub unsafe extern "C" fn configure_request(state: &mut Gmux, ev: &mut xlib::XCon
 }
 
 pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent) {
+    log::info!("ButtonPress: window={:x}, button={}, x_root={}, y_root={}", ev.window, ev.button, ev.x_root, ev.y_root);
+    
     if let Some(handle) = state.window_to_client_handle(ev.window) {
+        log::info!("ButtonPress: found client {:?} for window {:x}", handle, ev.window);
         if let Some(client) = state.clients.get(&handle) {
             let mon_idx = client.monitor_idx;
+            
+            // Switch monitor if necessary
             if mon_idx != state.selected_monitor {
                 if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
                     state.unfocus(sel_handle, true);
                 }
                 state.selected_monitor = mon_idx;
+            }
+            
+            // Always focus the clicked client, even if on the same monitor
+            if state.mons[mon_idx].sel != Some(handle) {
                 state.focus(Some(handle));
             }
         }
@@ -155,6 +164,12 @@ pub unsafe extern "C" fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPr
     if let Some(action) = parse_button_press(state, ev) {
         action.execute(state);
     }
+    
+    // If this was a grabbed button event (click on unfocused window), 
+    // replay the event to the application
+    if state.window_to_client_handle(ev.window).is_some() {
+        state.xwrapper.allow_events(xlib::ReplayPointer);
+    }
 }
 
 // DestroyNotify handler to unmanage windows
@@ -165,16 +180,41 @@ pub unsafe extern "C" fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestro
 }
 
 pub unsafe extern "C" fn motion_notify(state: &mut Gmux, ev: &mut xlib::XMotionEvent) {
-    if ev.window != state.root.0 {
+    log::info!("MotionNotify: window={:x}, root={:x}, x_root={}, y_root={}", ev.window, state.root.0, ev.x_root, ev.y_root);
+    
+    // Handle motion events from client windows (via XSelectInput)
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        if let Some(client) = state.clients.get(&handle) {
+            // Focus this client if it's not already focused
+            if state.mons[client.monitor_idx].sel != Some(handle) {
+                log::info!("MotionNotify: client motion focusing {:?} (window={:x})", handle, client.win.0);
+                state.focus(Some(handle));
+            }
+            // Note: No need for allow_events with XSelectInput - motion events aren't "grabbed"
+        }
         return;
     }
-    let m = state.rect_to_monitor(ev.x_root, ev.y_root, 1, 1);
-    if m != state.selected_monitor {
-        if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
-            state.unfocus(sel_handle, true);
+    
+    // Handle motion events on root window (original logic)
+    if ev.window == state.root.0 {
+        let m = state.rect_to_monitor(ev.x_root, ev.y_root, 1, 1);
+        if m != state.selected_monitor {
+            if let Some(sel_handle) = state.mons[state.selected_monitor].sel {
+                state.unfocus(sel_handle, true);
+            }
+            state.selected_monitor = m;
+            state.focus(None);
         }
-        state.selected_monitor = m;
-        state.focus(None);
+        
+        // Also check if there's a client at this position (for root window motion)
+        if let Some(handle) = state.client_at_pos(ev.x_root, ev.y_root) {
+            if let Some(client) = state.clients.get(&handle) {
+                if state.mons[client.monitor_idx].sel != Some(handle) {
+                    log::info!("MotionNotify: root motion focusing client {:?} at ({}, {})", handle, ev.x_root, ev.y_root);
+                    state.focus(Some(handle));
+                }
+            }
+        }
     }
 }
 
