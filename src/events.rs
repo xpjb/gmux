@@ -269,10 +269,33 @@ pub unsafe fn property_notify(state: &mut Gmux, ev: &mut xlib::XPropertyEvent) {
     }
 }
 
-/// Handles ClientMessage events, particularly NetActiveWindow requests
+/// Handles ClientMessage events, particularly NetActiveWindow and NetWMState requests
 pub unsafe fn client_message(state: &mut Gmux, ev: &mut xlib::XClientMessageEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {
-        if ev.message_type == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::ActiveWindow)) {
+        if ev.message_type == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMState)) {
+            // Handle _NET_WM_STATE fullscreen requests
+            let net_wm_fullscreen = state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMFullscreen));
+            
+            if ev.data.get_long(1) == net_wm_fullscreen as i64 || ev.data.get_long(2) == net_wm_fullscreen as i64 {
+                // _NET_WM_STATE_ADD = 1, _NET_WM_STATE_REMOVE = 0, _NET_WM_STATE_TOGGLE = 2
+                let should_fullscreen = match ev.data.get_long(0) {
+                    1 => true,  // _NET_WM_STATE_ADD
+                    0 => false, // _NET_WM_STATE_REMOVE  
+                    2 => {      // _NET_WM_STATE_TOGGLE
+                        if let Some(client) = state.clients.get(&handle) {
+                            !client.is_fullscreen
+                        } else {
+                            false
+                        }
+                    },
+                    _ => false,
+                };
+                
+                log::info!("Client requested fullscreen: {}", should_fullscreen);
+                state.setfullscreen(handle, should_fullscreen);
+            }
+            
+        } else if ev.message_type == state.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::ActiveWindow)) {
             let should_mark_urgent = if let Some(client) = state.clients.get(&handle) {
                 // If this is not the currently selected client and it's not already urgent, set urgent
                 let is_selected = state.mons[state.selected_monitor].sel == Some(handle);

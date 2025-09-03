@@ -8,6 +8,7 @@ use simplelog::{CombinedLogger, WriteLogger, LevelFilter, Config};
 use std::fs::create_dir_all;
 use std::panic;
 use std::io::Write;
+use std::os::raw::{c_int, c_long, c_uchar, c_ulong};
 
 mod ivec2;
 mod xwrapper;
@@ -337,6 +338,9 @@ impl Gmux {
         self.clients.insert(handle, client);
         self.mons[mon_idx].stack.insert(0, handle);
 
+        // Check for existing window state properties (like fullscreen)
+        self.update_window_state_properties(handle);
+
         self.arrange(Some(self.selected_monitor));
         if let Some(sel_client) = self.clients.get(&handle) {
             self.xwrapper.select_input(
@@ -357,6 +361,51 @@ impl Gmux {
         }
     }
 
+
+    /// Check and update window state properties like fullscreen (based on dwm's updatesizehints)
+    fn update_window_state_properties(&mut self, handle: ClientHandle) {
+        if let Some(client) = self.clients.get(&handle) {
+            let net_wm_state = self.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMState));
+            let net_wm_fullscreen = self.xwrapper.atoms.get(crate::xwrapper::Atom::Net(crate::xwrapper::Net::WMFullscreen));
+            
+            // Check if window has _NET_WM_STATE_FULLSCREEN set
+            unsafe {
+                let mut actual_type: xlib::Atom = 0;
+                let mut actual_format: c_int = 0;
+                let mut nitems: c_ulong = 0;
+                let mut bytes_after: c_ulong = 0;
+                let mut prop: *mut c_uchar = std::ptr::null_mut();
+                
+                let result = xlib::XGetWindowProperty(
+                    self.xwrapper.display(),
+                    client.win.0,
+                    net_wm_state,
+                    0,
+                    c_long::MAX,
+                    0, // delete = False
+                    xlib::XA_ATOM,
+                    &mut actual_type,
+                    &mut actual_format,
+                    &mut nitems,
+                    &mut bytes_after,
+                    &mut prop,
+                );
+                
+                if result == xlib::Success as i32 && !prop.is_null() && nitems > 0 {
+                    let atoms = std::slice::from_raw_parts(prop as *const xlib::Atom, nitems as usize);
+                    for &atom in atoms {
+                        if atom == net_wm_fullscreen {
+                            log::info!("Window already has fullscreen state, applying fullscreen");
+                            // Found fullscreen atom - this window is already fullscreen
+                            self.setfullscreen(handle, true);
+                            break;
+                        }
+                    }
+                    xlib::XFree(prop as *mut _);
+                }
+            }
+        }
+    }
 
     fn window_to_client_handle(&self, w: xlib::Window) -> Option<ClientHandle> {
         let handle = ClientHandle::from(Window(w));

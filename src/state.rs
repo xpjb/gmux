@@ -287,7 +287,11 @@ impl Gmux {
                 client.h,
                 crate::config::BORDER_PX,
             );
+            // FIXED: Send configure notification to the client like dwm does
+            self.send_configure_notify(handle);
         }
+        // FIXED: Sync with the X server to ensure changes take effect
+        self.xwrapper.sync(false);
     }
 
     fn grab_buttons(&mut self, handle: ClientHandle, focused: bool) {
@@ -485,6 +489,82 @@ impl Gmux {
         }
     }
 
+
+    /// Toggle fullscreen state for a client window (based on dwm's setfullscreen)
+    pub fn setfullscreen(&mut self, handle: ClientHandle, fullscreen: bool) {
+        let (should_set_fs, should_unset_fs, client_info) = {
+            if let Some(client) = self.clients.get_mut(&handle) {
+                let should_set = fullscreen && !client.is_fullscreen;
+                let should_unset = !fullscreen && client.is_fullscreen;
+                
+                if should_set {
+                    client.is_fullscreen = true;
+                    client._old_state = client.is_floating;
+                    client._oldbw = client.bw;
+                    client.bw = 0;
+                    client.is_floating = true;
+                    (true, false, Some((client.win, client.monitor_idx)))
+                } else if should_unset {
+                    client.is_fullscreen = false;
+                    client.is_floating = client._old_state;
+                    client.bw = client._oldbw;
+                    let old_geom = (client.oldx, client.oldy, client.oldw, client.oldh);
+                    client.x = old_geom.0;
+                    client.y = old_geom.1;
+                    client.w = old_geom.2;
+                    client.h = old_geom.3;
+                    (false, true, Some((client.win, client.monitor_idx)))
+                } else {
+                    (false, false, None)
+                }
+            } else {
+                (false, false, None)
+            }
+        };
+        
+        if let Some((win, mon_idx)) = client_info {
+            if should_set_fs {
+                // Set _NET_WM_STATE to _NET_WM_STATE_FULLSCREEN
+                let fullscreen_atom = self.xwrapper.atoms.get(Atom::Net(Net::WMFullscreen));
+                self.xwrapper.change_property(
+                    win,
+                    self.xwrapper.atoms.get(Atom::Net(Net::WMState)),
+                    xlib::XA_ATOM,
+                    32,
+                    xlib::PropModeReplace,
+                    &fullscreen_atom as *const xlib::Atom as *const u8,
+                    1,
+                );
+                
+                // Resize to full monitor dimensions
+                let mon_ww = self.mons[mon_idx].ww;
+                self.resize(handle, 0, 0, mon_ww, self.screen_height);
+                self.xwrapper.raise_window(win);
+                
+            } else if should_unset_fs {
+                // Clear _NET_WM_STATE
+                self.xwrapper.change_property(
+                    win,
+                    self.xwrapper.atoms.get(Atom::Net(Net::WMState)),
+                    xlib::XA_ATOM,
+                    32,
+                    xlib::PropModeReplace,
+                    std::ptr::null(),
+                    0,
+                );
+                
+                // Get the restored geometry from the client
+                let (x, y, w, h) = if let Some(client) = self.clients.get(&handle) {
+                    (client.x, client.y, client.w, client.h)
+                } else {
+                    return;
+                };
+                
+                self.resize(handle, x, y, w, h);
+                self.arrange(Some(mon_idx));
+            }
+        }
+    }
 
     /// Sends a synthetic ConfigureNotify event to a client.
     pub fn send_configure_notify(&mut self, handle: ClientHandle) {
