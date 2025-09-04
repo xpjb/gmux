@@ -6,3 +6,4 @@ You are an X11 expert including X11 events.
 The folder contains dwm as a subfolder, to be used as a reference, fully working implementation in C.
 
 Check your work with cargo check
+- log is located in ~/.local/share/gmux/gmux.log

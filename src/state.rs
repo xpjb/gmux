@@ -26,7 +26,7 @@ pub struct Gmux {
     pub wm_check_window: Window,
     pub _xerror: bool,
     pub tags: [&'static str; 5],
-    pub all_commands: Vec<String>,
+    pub all_commands: Vec<crate::launcher::LauncherEntry>,
     pub bar_state: BarState,
     pub command_sender: Sender<GmuxError>,
     pub command_receiver: Receiver<GmuxError>,

@@ -1,9 +1,5 @@
 use crate::*;
-use std::collections::HashSet;
-use std::env;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 // Add SystemTime for checking modification timestamps
 use std::time::SystemTime; 
 use x11::{keysym, xlib};
@@ -11,6 +7,14 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use freedesktop_desktop_entry::DesktopEntry;
 use dirs;
+use log;
+
+#[derive(Debug, Clone)]
+pub struct LauncherEntry {
+    pub name: String,        // Display name from Name= field
+    pub exec: String,        // Full Exec= command  
+    pub terminal: bool,      // Whether it's a terminal app
+}
 
 pub const LAUNCHER_PROPORTION: f32 = 0.381953;
 
@@ -37,7 +41,7 @@ impl Gmux {
                 keysym::XK_Return => {
                     if !candidate_indices.is_empty() {
                         let command_idx = candidate_indices[*selected_idx];
-                        command_to_run = Some(self.all_commands[command_idx].clone());
+                        command_to_run = Some(self.all_commands[command_idx].exec.clone());
                     }
                     new_state = Some(BarState::Normal);
                     self.xwrapper.ungrab_keyboard();
@@ -76,7 +80,7 @@ impl Gmux {
                     .all_commands
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, cmd)| matcher.fuzzy_match(cmd, input).map(|score| (score, i)))
+                    .filter_map(|(i, entry)| matcher.fuzzy_match(&entry.name, input).map(|score| (score, i)))
                     .collect();
 
                 new_candidates.sort_by(|a, b| b.0.cmp(&a.0));
@@ -99,6 +103,7 @@ impl Gmux {
     pub fn enter_launcher_mode(&mut self) {
         // Refresh commands to pick up newly installed packages
         self.all_commands = Gmux::get_commands();
+        log::info!("Launcher entered: {} commands loaded", self.all_commands.len());
         let initial_candidates = (0..self.all_commands.len()).collect();
         self.bar_state = BarState::Launcher {
             prompt: "> ".to_string(),
@@ -110,8 +115,9 @@ impl Gmux {
         self.draw_bars();
     }
 
-    // This function is now refactored to use a cache.
-    pub fn get_commands() -> Vec<String> {
+    // This function is now refactored to use a cache and focus on .desktop files.
+    pub fn get_commands() -> Vec<LauncherEntry> {
+        log::info!("get_commands() called - loading launcher entries");
         // 1. Define cache path and identify all source directories.
         let cache_dir = dirs::cache_dir().map(|p| p.join("gmux"));
         let cache_path = cache_dir.as_ref().map(|p| p.join("commands"));
@@ -124,12 +130,6 @@ impl Gmux {
             home_dir.push(".local/share/applications");
             source_dirs.push(home_dir);
         }
-        if let Ok(path_var) = env::var("PATH") {
-            for path in path_var.split(':') {
-                source_dirs.push(path.into());
-            }
-        }
-        source_dirs.dedup(); // Remove duplicate paths
 
         // 2. Check if the cache is valid by comparing modification times.
         if let Some(ref path) = cache_path {
@@ -151,64 +151,82 @@ impl Gmux {
 
                     if cache_is_valid {
                         if let Ok(cached_data) = fs::read_to_string(path) {
-                            return cached_data.lines().map(String::from).collect();
+                            let mut entries = Vec::new();
+                            for line in cached_data.lines() {
+                                let parts: Vec<&str> = line.split('\t').collect();
+                                if parts.len() == 3 {
+                                    entries.push(LauncherEntry {
+                                        name: parts[0].to_string(),
+                                        exec: parts[1].to_string(),
+                                        terminal: parts[2] == "true",
+                                    });
+                                }
+                            }
+                            return entries;
                         }
                     }
                 }
             }
         }
         
-        // 3. CACHE MISS: Regenerate the command list.
-        let mut commands = HashSet::new();
+        // 3. CACHE MISS: Regenerate the command list from .desktop files.
+        let mut entries = Vec::new();
+        let mut total_desktop_files = 0;
+        let mut parsed_files = 0;
+        let mut filtered_out = 0;
 
         for dir in &source_dirs {
-
-            // Scan directory for executables and .desktop files.
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
+            if let Ok(dir_entries) = fs::read_dir(dir) {
+                for entry in dir_entries.flatten() {
                     let path = entry.path();
-                    if let Ok(metadata) = entry.metadata() {
-                        // Handle executables from PATH
-                        if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
-                             if let Some(command) = entry.file_name().to_str() {
-                                commands.insert(command.to_string());
-                            }
-                        }
-                    }
                     
-                    // Handle .desktop files
+                    // Only process .desktop files
                     if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
-                         if let Ok(desktop_entry) = DesktopEntry::from_path::<&str>(&path, None) {
-                            if desktop_entry.type_() == Some("Application") && !desktop_entry.no_display() {
-                                if let Some(exec) = desktop_entry.exec() {
-                                    for part in exec.split_whitespace() {
-                                        if !part.contains('=') {
-                                            let command = Path::new(part).file_name()
-                                                .and_then(|s| s.to_str()).unwrap_or(part);
-                                            commands.insert(command.to_string());
-                                            break;
-                                        }
+                        total_desktop_files += 1;
+                        if let Ok(desktop_entry) = DesktopEntry::from_path::<&str>(&path, None) {
+                            parsed_files += 1;
+                            
+                            let is_app = desktop_entry.type_() == Some("Application");
+                            let is_hidden = desktop_entry.no_display();
+                            let is_terminal = desktop_entry.terminal();
+                            
+                            // Filter for GUI applications only
+                            if is_app && !is_hidden && !is_terminal {
+                                if let Some(name) = desktop_entry.name(&[] as &[&str]) {
+                                    if let Some(exec) = desktop_entry.exec() {
+                                        entries.push(LauncherEntry {
+                                            name: name.to_string(),
+                                            exec: exec.to_string(),
+                                            terminal: desktop_entry.terminal(),
+                                        });
                                     }
                                 }
+                            } else {
+                                filtered_out += 1;
                             }
                         }
                     }
                 }
             }
         }
+        
+        log::info!("Desktop files found: {}, parsed: {}, filtered out: {}, final entries: {}", 
+            total_desktop_files, parsed_files, filtered_out, entries.len());
 
-        let mut sorted_commands: Vec<_> = commands.into_iter().collect();
-        sorted_commands.sort();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
 
         // 4. Write the new data to the cache file.
         if let (Some(dir), Some(path)) = (cache_dir, cache_path) {
             if fs::create_dir_all(dir).is_ok() {
-                let commands_data = sorted_commands.join("\n");
-                let _ = fs::write(path, commands_data);
+                let cache_lines: Vec<String> = entries.iter()
+                    .map(|e| format!("{}\t{}\t{}", e.name, e.exec, e.terminal))
+                    .collect();
+                let cache_data = cache_lines.join("\n");
+                let _ = fs::write(path, cache_data);
             }
         }
         
-        sorted_commands
+        entries
     }
 
     pub fn draw_launcher_bar(&mut self, mon_idx: usize) {
@@ -218,6 +236,7 @@ impl Gmux {
             } else {
                 return;
             };
+
 
         let bar_wh = ivec2(self.mons[mon_idx].ww, self.bar_height);
 
@@ -246,7 +265,7 @@ impl Gmux {
         let candidate_widths: Vec<i32> = candidate_indices
             .iter()
             .map(|&command_idx| {
-                let candidate = &self.all_commands[command_idx];
+                let candidate = &self.all_commands[command_idx].name;
                 (self.get_text_width(candidate)) as i32
             })
             .collect();
@@ -271,7 +290,7 @@ impl Gmux {
 
             if draw_pos_x + w > pos_x && draw_pos_x < self.mons[mon_idx].ww as i32 {
                 let command_idx = candidate_indices[i];
-                let candidate = &self.all_commands[command_idx];
+                let candidate = &self.all_commands[command_idx].name;
                 let wh = ivec2(w as _, self.bar_height);
 
                 let (bg_col, fg_col) = if i == selected_idx {
