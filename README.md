@@ -1,8 +1,12 @@
 # GMuX
 This is a Rust port of dwm. It retains the code-as-config approach while being modularized. Naturally it is still based on X11. MIT Licensed like the original.
 
+![gmux screenshot](./gmux.png)
+
 
 Current state is in beta - it is pretty usable, has not been tested with multiple monitors
+
+
 
 ## Building
 * Needs X11 and Xft and other shit
@@ -43,6 +47,7 @@ Current state is in beta - it is pretty usable, has not been tested with multipl
 * Idk just add these back in with CC if you miss them lol
 
 ## Things it would be nice to have
+* Parsing .desktop files: tries to run file managers with %U, lol
 * Wiggle focus
 * Sometimes the redrawing with notifications etc is a bit jank. it doesnt redraw when it gets one and it doesnt redraw when it expires either
 * Maybe a notification for successful screenshot too
