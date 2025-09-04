@@ -18,6 +18,117 @@ pub struct LauncherEntry {
 
 pub const LAUNCHER_PROPORTION: f32 = 0.381953;
 
+/// Process desktop file field codes in Exec strings.
+/// According to Desktop Entry Specification, these codes should be handled:
+/// %f - single file path
+/// %F - multiple file paths  
+/// %u - single URL
+/// %U - multiple URLs
+/// %i - icon name (with --icon prefix)
+/// %c - translated name of the application
+/// %k - location of desktop file
+/// %% - literal %
+/// 
+/// For launcher usage (no files/URLs), we remove file/URL codes entirely.
+fn process_exec_field_codes(exec_string: &str) -> String {
+    let mut result = String::new();
+    let mut chars = exec_string.chars().peekable();
+    
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            if let Some(&next_ch) = chars.peek() {
+                match next_ch {
+                    // File/URL codes - remove entirely for launcher
+                    'f' | 'F' | 'u' | 'U' => {
+                        chars.next(); // consume the code letter
+                        // Skip any trailing whitespace after the removed field code
+                        while chars.peek() == Some(&' ') {
+                            chars.next();
+                        }
+                    }
+                    // Icon code - remove entirely (launcher doesn't provide icons)
+                    'i' => {
+                        chars.next(); // consume 'i'
+                        // Skip any trailing whitespace
+                        while chars.peek() == Some(&' ') {
+                            chars.next();
+                        }
+                    }
+                    // Application name code - remove for now (could be implemented later)
+                    'c' => {
+                        chars.next(); // consume 'c'
+                        // Skip any trailing whitespace
+                        while chars.peek() == Some(&' ') {
+                            chars.next();
+                        }
+                    }
+                    // Desktop file location - remove for now
+                    'k' => {
+                        chars.next(); // consume 'k'
+                        // Skip any trailing whitespace
+                        while chars.peek() == Some(&' ') {
+                            chars.next();
+                        }
+                    }
+                    // Literal % - keep one %
+                    '%' => {
+                        chars.next(); // consume second %
+                        result.push('%');
+                    }
+                    // Unknown code - keep as is
+                    _ => {
+                        result.push(ch);
+                    }
+                }
+            } else {
+                // % at end of string - keep as is
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    
+    // Clean up any double spaces that might have been created
+    let mut cleaned = result.replace("  ", " ");
+    while cleaned.contains("  ") {
+        cleaned = cleaned.replace("  ", " ");
+    }
+    cleaned.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_exec_field_codes() {
+        // Test basic %u removal
+        assert_eq!(process_exec_field_codes("/usr/lib/firefox/firefox %u"), "/usr/lib/firefox/firefox");
+        
+        // Test %f removal
+        assert_eq!(process_exec_field_codes("gedit %f"), "gedit");
+        
+        // Test multiple codes
+        assert_eq!(process_exec_field_codes("app %f %u %F"), "app");
+        
+        // Test literal %% 
+        assert_eq!(process_exec_field_codes("app %% test"), "app % test");
+        
+        // Test mixed codes and literal text
+        assert_eq!(process_exec_field_codes("firefox --new-window %u"), "firefox --new-window");
+        
+        // Test %i (icon) removal
+        assert_eq!(process_exec_field_codes("app %i %f"), "app");
+        
+        // Test no codes
+        assert_eq!(process_exec_field_codes("simple-app"), "simple-app");
+        
+        // Test codes with extra spaces
+        assert_eq!(process_exec_field_codes("app   %u   %f   "), "app");
+    }
+}
+
 impl Gmux {
     pub fn handle_launcher_keypress(&mut self, kev: &xlib::XKeyEvent) {
         let mut new_state = None;
@@ -194,9 +305,11 @@ impl Gmux {
                             if is_app && !is_hidden && !is_terminal {
                                 if let Some(name) = desktop_entry.name(&[] as &[&str]) {
                                     if let Some(exec) = desktop_entry.exec() {
+                                        // Process field codes (like %u, %f, %F, etc.) for launcher
+                                        let processed_exec = process_exec_field_codes(exec);
                                         entries.push(LauncherEntry {
                                             name: name.to_string(),
-                                            exec: exec.to_string(),
+                                            exec: processed_exec,
                                             terminal: desktop_entry.terminal(),
                                         });
                                     }

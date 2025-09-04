@@ -48,6 +48,8 @@ Current state is in beta - it is pretty usable, has not been tested with multipl
 
 ## Things it would be nice to have
 * Parsing .desktop files: tries to run file managers with %U, lol
+* Sometimes the discord cleanup, dunno if its discords fault or what
+* No X server thing might be a bug lol
 * Wiggle focus
 * Sometimes the redrawing with notifications etc is a bit jank. it doesnt redraw when it gets one and it doesnt redraw when it expires either
 * Maybe a notification for successful screenshot too
