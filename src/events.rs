@@ -169,6 +169,19 @@ pub unsafe fn button_press(state: &mut Gmux, ev: &mut xlib::XButtonPressedEvent)
     }
 }
 
+pub unsafe fn unmap_notify(state: &mut Gmux, ev: &mut xlib::XUnmapEvent) {
+    if let Some(handle) = state.window_to_client_handle(ev.window) {
+        if ev.send_event != 0 {
+            // If it's a synthetic event, don't unmanage - just update client state
+            log::info!("UnmapNotify: synthetic event for window {:?}, not unmanaging", ev.window);
+        } else {
+            // Real unmap event - unmanage the client
+            log::info!("UnmapNotify: real event for window {:?}, unmanaging", ev.window);
+            state.unmanage(handle, false);
+        }
+    }
+}
+
 // DestroyNotify handler to unmanage windows
 pub unsafe fn destroy_notify(state: &mut Gmux, ev: &mut xlib::XDestroyWindowEvent) {
     if let Some(handle) = state.window_to_client_handle(ev.window) {

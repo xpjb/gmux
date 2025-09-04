@@ -12,6 +12,10 @@ Current state is in beta - it is pretty usable, has not been tested with multipl
 * Needs X11 and Xft and other shit
 * On arch this is `sudo pacman -S ... blahblahblahblah`
 
+## Installation
+* Run ./install.sh which performs a release build and copies it to /usr/local/bin
+* Then you would add gmux to .xinitrc or whatever
+
 ## New Features
 * Integrated log with stderr capture from child processes
 * Integrated, .desktop based launcher replacing dmenu
@@ -39,7 +43,7 @@ Current state is in beta - it is pretty usable, has not been tested with multipl
 * alt+l to increase primary area
 
 ## Colour Scheme
-* Based on vague vim theme see [here](https://xpjb.github.io/tools/palette.html) to coordinate other tools
+* Based on [vague vim theme](https://github.com/vague2k/vague.nvim), see colour codes [here](https://xpjb.github.io/tools/palette.html)
 
 ## Removed Features
 * Monocle/fullscreen/floating/drag resize - semi removed, i dont use it. ??
@@ -47,13 +51,11 @@ Current state is in beta - it is pretty usable, has not been tested with multipl
 * Idk just add these back in with CC if you miss them lol
 
 ## Things it would be nice to have
-* Parsing .desktop files: tries to run file managers with %U, lol
-* Sometimes the discord cleanup, dunno if its discords fault or what
 * No X server thing might be a bug lol
-* Wiggle focus
+* Focus on mouse movement - i3 and dwm dont have this either (mouse change is fine)
 * Sometimes the redrawing with notifications etc is a bit jank. it doesnt redraw when it gets one and it doesnt redraw when it expires either
 * Maybe a notification for successful screenshot too
-* Run spin loop.. needs fps limit
+* Run spin loop.. needs fps limit. powr usage etc
 * Test performance of launcher caching too
 * Getting an error in launcher state would probably cook you
 * test kills the x session and orphans all the windows and theyre in some other session, cooked

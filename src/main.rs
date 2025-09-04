@@ -145,6 +145,7 @@ impl Gmux {
                     xwrapper::Event::ButtonPress(mut bev) => unsafe { events::button_press(self, &mut bev) },
                     xwrapper::Event::MotionNotify(mut mev) => unsafe { events::motion_notify(self, &mut mev) },
                     xwrapper::Event::MapRequest(mut mrev) => unsafe { events::map_request(self, &mut mrev) },
+                    xwrapper::Event::UnmapNotify(mut urev) => unsafe { events::unmap_notify(self, &mut urev) },
                     xwrapper::Event::DestroyNotify(mut drev) => unsafe { events::destroy_notify(self, &mut drev) },
                     xwrapper::Event::EnterNotify(mut erev) => unsafe { events::enter_notify(self, &mut erev) },
                     xwrapper::Event::PropertyNotify(mut prev) => unsafe { events::property_notify(self, &mut prev) },
