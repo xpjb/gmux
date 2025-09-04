@@ -68,12 +68,24 @@ impl Gmux {
         
         while left <= right {
             let mid = (left + right) / 2;
-            let truncated = &text[..mid];
+            
+            // Ensure we don't slice in the middle of a UTF-8 character
+            let safe_mid = if mid > text.len() {
+                text.len()
+            } else {
+                let mut safe_pos = mid;
+                while safe_pos > 0 && !text.is_char_boundary(safe_pos) {
+                    safe_pos -= 1;
+                }
+                safe_pos
+            };
+            
+            let truncated = &text[..safe_mid];
             let truncated_width = self.get_text_width(truncated);
             
             if truncated_width <= available_width {
-                best_len = mid;
-                if mid == text.len() {
+                best_len = safe_mid;
+                if safe_mid == text.len() {
                     break;
                 }
                 left = mid + 1;
