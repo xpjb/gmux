@@ -97,6 +97,8 @@ impl Gmux {
     }
 
     pub fn enter_launcher_mode(&mut self) {
+        // Refresh commands to pick up newly installed packages
+        self.all_commands = Gmux::get_commands();
         let initial_candidates = (0..self.all_commands.len()).collect();
         self.bar_state = BarState::Launcher {
             prompt: "> ".to_string(),
@@ -132,29 +134,24 @@ impl Gmux {
         // 2. Check if the cache is valid by comparing modification times.
         if let Some(ref path) = cache_path {
             if path.exists() {
-                if let Ok(cached_data) = fs::read_to_string(path) {
-                    if let Some((timestamps_line, commands_data)) = cached_data.split_once('\n') {
-                        let mut cache_is_valid = true;
-                        for part in timestamps_line.split_whitespace() {
-                            if let Some((path_str, mtime_str)) = part.split_once(':') {
-                                if let Ok(mtime) = mtime_str.parse::<u64>() {
-                                    if let Ok(metadata) = fs::metadata(path_str) {
-                                        let current_mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)
-                                            .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-                                        if current_mtime != mtime {
-                                            cache_is_valid = false;
-                                            break;
-                                        }
-                                    } else {
-                                        cache_is_valid = false; // Path doesn't exist anymore
-                                        break;
-                                    }
-                                }
+                if let Ok(cached_metadata) = fs::metadata(path) {
+                    let cache_mtime = cached_metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    
+                    // Check if any source directory is newer than cache (mimics stest -dqr -n)
+                    let mut cache_is_valid = true;
+                    for dir in &source_dirs {
+                        if let Ok(dir_metadata) = fs::metadata(dir) {
+                            let dir_mtime = dir_metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                            if dir_mtime > cache_mtime {
+                                cache_is_valid = false;
+                                break;
                             }
                         }
+                    }
 
-                        if cache_is_valid {
-                            return commands_data.lines().map(String::from).collect();
+                    if cache_is_valid {
+                        if let Ok(cached_data) = fs::read_to_string(path) {
+                            return cached_data.lines().map(String::from).collect();
                         }
                     }
                 }
@@ -163,15 +160,8 @@ impl Gmux {
         
         // 3. CACHE MISS: Regenerate the command list.
         let mut commands = HashSet::new();
-        let mut current_timestamps = Vec::new();
 
         for dir in &source_dirs {
-            // Store modification time for the new cache file.
-            if let Ok(metadata) = fs::metadata(dir) {
-                 let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)
-                    .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-                current_timestamps.push(format!("{}:{}", dir.to_string_lossy(), mtime));
-            }
 
             // Scan directory for executables and .desktop files.
             if let Ok(entries) = fs::read_dir(dir) {
@@ -213,10 +203,8 @@ impl Gmux {
         // 4. Write the new data to the cache file.
         if let (Some(dir), Some(path)) = (cache_dir, cache_path) {
             if fs::create_dir_all(dir).is_ok() {
-                let timestamps_line = current_timestamps.join(" ");
                 let commands_data = sorted_commands.join("\n");
-                let cache_content = format!("{}\n{}", timestamps_line, commands_data);
-                let _ = fs::write(path, cache_content);
+                let _ = fs::write(path, commands_data);
             }
         }
         

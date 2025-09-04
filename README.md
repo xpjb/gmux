@@ -1,6 +1,7 @@
 # Issues
 * Launcher caching doesnt refresh
 * Fullscreen shit is fucked, needs to tell app its new dimensions or something. Plays badly with games. or give them fullscreen, would need a test
+* random .desktop files show up in launcher lol?
 
 # Nice To Have
 * Wiggle focus
@@ -12,5 +13,4 @@
 * close discord no resize
 * I dont think launcher refresh works either
 * fullscreen doesnt work
-* random .desktop files show up in launcher lol?
 * test kills the x session and orphans all the windows and theyre in some other session, cooked
